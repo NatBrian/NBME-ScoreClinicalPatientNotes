@@ -13,8 +13,6 @@
 # 
 # | | |
 # |---|---|
-# | **Hardware** | L20X 143 GB GPU |
-# | **Runtime** | ~2–4 hours per model |
 # | **Output** | `adapters/` folder with 3 LoRA adapters |
 # 
 # > **Before running**: set `CUDA_VISIBLE_DEVICES=4` (or whichever GPU is free) in your kernel/terminal.
@@ -104,7 +102,7 @@ CONFIG = {
     "LORA_DROPOUT":          0.05,
     "LORA_TARGET_MODULES":   ["q_proj", "k_proj", "v_proj", "o_proj",
                               "gate_proj", "up_proj", "down_proj"],
-    "PER_DEVICE_BATCH_SIZE": 8,      # L20X 143 GB — large batch fits
+    "PER_DEVICE_BATCH_SIZE": 8,      
     "GRADIENT_ACCUMULATION": 2,      # effective batch = 8×2 = 16
     "LEARNING_RATE":         2e-4,
     "NUM_TRAIN_EPOCHS":      3,
@@ -126,7 +124,7 @@ MODEL_REGISTRY = [
         "name":            "qwen_35_9b",
         "model_id":        "Qwen/Qwen3.5-9B",
         "model_class":     "causal_lm",
-        "compute_dtype":   torch.bfloat16,  # L20X native BF16
+        "compute_dtype":   torch.bfloat16,  # native BF16
         "fp16":            False,
         "bf16":            True,
         "adapter_dir":     Path("./adapters/qwen_35_9b_adapter"),
@@ -333,12 +331,12 @@ print("✓ Section 3: make_formatting_func defined")
 # - `AutoModelForCausalLM` for Qwen3.5-9B and Qwen3.5-4B
 # - `AutoModelForImageTextToText` for Gemma 4 (multimodal arch, text-only training)
 # 
-# All models use `bfloat16` compute dtype — L20X supports native BF16 tensor cores.
+# All models use `bfloat16` compute dtype — if system supports native BF16 tensor cores.
 # 
 # `device_map={"": "cuda:0"}` pins the model to a single GPU. Set `CUDA_VISIBLE_DEVICES`
 # in your shell before launching Jupyter to control which physical GPU is used:
 # ```bash
-# export CUDA_VISIBLE_DEVICES=4   # use GPU 4 (first free L20X)
+# export CUDA_VISIBLE_DEVICES=4
 # jupyter notebook
 # ```
 
@@ -555,7 +553,7 @@ print("✓ Section 7: train_one_model defined")
 
 # ## Run Phase 2 — Sequential QLoRA Training
 # 
-# Trains all 3 models one after the other on L20X (143 GB VRAM). Each model is fully
+# Trains all 3 models one after the other. Each model is fully
 # unloaded from VRAM before the next one loads.
 # 
 # Expected log output per model:
@@ -565,7 +563,6 @@ print("✓ Section 7: train_one_model defined")
 # ...
 # Training complete — loss=X.XX  steps=N
 # ✓ Adapter saved → ./adapters/qwen_35_9b_adapter
-# VRAM: X.X/143.0 GB free
 # ```
 # 
 # **After completion**: copy `adapters/` to Kaggle as a private dataset (internet OFF inference).

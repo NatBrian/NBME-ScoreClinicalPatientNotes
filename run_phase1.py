@@ -15,9 +15,9 @@ for f in ['features.csv', 'patient_notes.csv', 'train.csv']:
 # 
 # | Key | Current value | Notes |
 # |-----|--------------|-------|
-# | `SAMPLE_SIZE` | `2000` | 2000 notes × ~14.8 features ≈ 29 600 pairs ≈ 90 min on L20X |
+# | `SAMPLE_SIZE` | `2000` | 2000 notes × ~14.8 features ≈ 29 600 pairs |
 # | `LLM_MODEL` | `Qwen/Qwen3-8B` | fp16, ~16 GB VRAM; cached locally |
-# | `LLM_4BIT` | `False` | fp16 is faster than 4-bit on L20X (no INT4 hardware) |
+# | `LLM_4BIT` | `False` | depends on system |
 # | `MAX_NEW_TOKENS` | `128` | Sufficient for JSON span output |
 # | `BATCH_SIZE` | `32` | Pairs per GPU call; 32×4096 tokens fits in 140 GB |
 # | `CUDA_DEVICE` | `"cuda:0"` | = physical cuda:1 via `CUDA_VISIBLE_DEVICES=1` |
@@ -51,17 +51,6 @@ try:
     _DRIVE = Path(DRIVE_DIR)
 except NameError:
     _DRIVE = Path(".")
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  SYSTEM RESOURCE NOTES (as of 2026-04-29)
-#  8× NVIDIA L20X (144 GB each)
-#    Physical cuda:0  — 529 MB used (small process)
-#    Physical cuda:1  — ~4 MB used, 140 GB free  ← THIS PROCESS
-#    Physical cuda:2,3 — idle
-#    Physical cuda:4-7 — chaoqun's vLLM server (78-82 GB each) ← DO NOT USE
-#
-#  CUDA_VISIBLE_DEVICES=1 → physical cuda:1 maps to cuda:0 inside this process.
-# ══════════════════════════════════════════════════════════════════════════════
 
 CONFIG = {
     "DATA_DIR":              Path("."),
@@ -364,7 +353,7 @@ print("✓ Section 4: _strip_think_tokens, find_span_locations defined")
 
 # ## Section 5 — LLM Initialisation
 # 
-# Loads `Qwen/Qwen3-8B` in **fp16** (no quantization needed — 140 GB VRAM available).
+# Loads `Qwen/Qwen3-8B` in **fp16**.
 # 
 # - VRAM: ~16 GB on physical cuda:1 (mapped to cuda:0 via `CUDA_VISIBLE_DEVICES=1`)
 # - `device_map={"": "cuda:0"}` — pins entire model to one GPU, no cross-device issues
@@ -703,7 +692,7 @@ def main():
         faiss_index, faiss_metadata = build_faiss_index(train_df, pn_df, features_df, cfg)
         print(f"  ✓ Index: {faiss_index.ntotal} vectors")
 
-        # Step 3: Load model (fp16, ~16 GB on L20X)
+        # Step 3: Load model (fp16, ~16 GB)
         model_id = cfg['LLM_MODEL']
         quant    = "4-bit NF4" if cfg.get("LLM_4BIT") else "fp16"
         print(f"\n▶ Step 3/4 — Loading model ({model_id}, {quant}) ...")
