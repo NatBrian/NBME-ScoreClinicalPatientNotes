@@ -3,3 +3,22 @@ These supporting notebooks serve as prerequisite dependencies for the Phase 3 in
 Because the NBME competition enforces strict internet isolation during scoring, this architecture decouples dependency acquisition from runtime execution:
 - **Pre-provisioning:** These notebooks download and cache all required PyPI packages (as offline wheels) and model checkpoints.
 - **Offline Execution:** Artifacts are versioned as Kaggle Datasets and mounted into the Phase 3 notebook, ensuring deterministic, zero-network operation during inference.
+
+Usage:
+- 3_kaggle_inference.ipynb
+    - pip-wheel.ipynb
+    - gemma-4-e4b.ipynb
+    - qwen-35-4b.ipynb
+    - qwen-35-9b.ipynb
+
+- 3_kaggle_inference_v2.ipynb
+    - pip-wheel-v2.ipynb
+    - lfm2-5-1-2b.ipynb
+    - qwen3-1-7b.ipynb
+    - qwen3-8b.ipynb
+
+- 3_kaggle_inference_pretrained_only.ipynb
+    - pip-wheel-v2.ipynb
+    - lfm2-5-1-2b.ipynb
+    - qwen3-1-7b.ipynb
+    - qwen3-8b.ipynb
