@@ -31,6 +31,77 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["USE_TF"]                 = "0"
 os.environ["TRANSFORMERS_NO_TF"]     = "1"
 
+# ─────────────────────────────────────────
+from transformers import TrainerCallback
+import time
+
+class SafeEvalGenerationCallback(TrainerCallback):
+    """
+    Injects task-specific generation metrics into Trainer's eval pipeline
+    without mutating internal state or blocking training.
+    """
+    def __init__(self, val_dataset, tokenizer, model_spec, cfg, max_eval_samples: int = 64):
+        self.val_dataset = val_dataset
+        self.tokenizer = tokenizer
+        self.model_spec = model_spec
+        self.cfg = cfg
+        self.max_eval_samples = max_eval_samples
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if metrics is None:
+            return control
+            
+        # Fail-safe: ensure model & tokenizer are accessible via Trainer kwargs
+        model = kwargs.get("model")
+        if model is None:
+            return control
+            
+        # Subsample to prevent eval timeout / OOM
+        eval_subset = self.val_dataset
+        if len(eval_subset) > self.max_eval_samples:
+            eval_subset = eval_subset.select(range(self.max_eval_samples))
+            
+        try:
+            gen_metrics = run_validation_generation(
+                model,
+                self.tokenizer,
+                self.model_spec,
+                eval_subset,
+                self.cfg
+            )
+            # Prefix to avoid collision with default Trainer metrics
+            prefixed = {f"eval_gen_{k}": v for k, v in gen_metrics.items()}
+            metrics.update(prefixed)
+        except Exception as e:
+            metrics["eval_gen_failure"] = 1.0
+            metrics["eval_gen_error"] = str(e)
+            
+        return control
+
+class ResourceAndStabilityCallback(TrainerCallback):
+    """Logs GPU memory, step duration, and LoRA gradient norms at each logging step."""
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None or not state.is_world_process_zero:
+            return control
+            
+        if torch.cuda.is_available():
+            try:
+                logs["gpu_mem_alloc_gb"] = torch.cuda.memory_allocated(0) / 1024**3
+                logs["gpu_mem_reserved_gb"] = torch.cuda.memory_reserved(0) / 1024**3
+            except Exception:
+                pass
+                
+        model = kwargs.get("model")
+        if model is not None and hasattr(model, "base_model"):
+            try:
+                lora_params = [p for n, p in model.named_parameters() if "lora_" in n and p.requires_grad]
+                if lora_params:
+                    lora_grad_norm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in lora_params if p.grad is not None]))
+                    logs["lora_grad_norm"] = lora_grad_norm.item()
+            except Exception:
+                pass
+        return control
+
 # ── IMPORTS ───────────────────────────────────────────────────────────────────
 import ast
 import gc
@@ -475,7 +546,7 @@ def build_training_args(model_spec: dict, adapter_dir: Path, cfg: dict) -> Train
         load_best_model_at_end       = False,
         logging_steps                = cfg["LOGGING_STEPS"],
         logging_dir                  = str(adapter_dir / "logs"),
-        report_to                    = "none",
+        report_to                    = ["tensorboard"],
         seed                         = cfg["SEED"],
         data_seed                    = cfg["SEED"],
         remove_unused_columns        = False,
@@ -612,6 +683,38 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
             data_collator    = data_collator,
         )
 
+        trainer.add_callback(SafeEvalGenerationCallback(
+            val_dataset, tokenizer, model_spec, cfg, max_eval_samples=cfg.get("VAL_GENERATION_N", 64)
+        ))
+        trainer.add_callback(ResourceAndStabilityCallback())
+
+        import datetime as dt
+        config_snapshot = {
+            "timestamp": dt.datetime.utcnow().isoformat(),
+            "training_args": {
+                "num_train_epochs": cfg["NUM_TRAIN_EPOCHS"],
+                "learning_rate": cfg["LEARNING_RATE"],
+                "lora_r": cfg["LORA_R"],
+                "lora_alpha": cfg["LORA_ALPHA"],
+                "lora_dropout": cfg["LORA_DROPOUT"],
+                "per_device_batch_size": cfg["PER_DEVICE_BATCH_SIZE"],
+                "gradient_accumulation": cfg["GRADIENT_ACCUMULATION"],
+                "max_seq_length": cfg["MAX_SEQ_LENGTH"],
+                "lr_scheduler": cfg["LR_SCHEDULER"],
+                "warmup_ratio": cfg["WARMUP_RATIO"],
+            },
+            "model_spec": {k: str(v) if isinstance(v, Path) else v for k, v in model_spec.items()},
+            "dataset_config": {
+                "train_samples": len(train_dataset),
+                "val_samples": len(val_dataset),
+                "aug_sample_ratio": cfg["AUG_SAMPLE_RATIO"],
+                "n_folds": cfg["N_FOLDS"],
+                "val_fold": cfg["VAL_FOLD"],
+            }
+        }
+        with open(adapter_dir / "config_snapshot.json", "w") as f:
+            json.dump(config_snapshot, f, indent=2, default=str)
+
         log.info(f"[{model_name}] Starting training ...")
         train_result = trainer.train()
         log.info(
@@ -623,7 +726,7 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
         tokenizer.save_pretrained(str(adapter_dir))
         gen_metrics = run_validation_generation(model, tokenizer, model_spec, val_dataset, cfg)
 
-        metrics = {
+        final_metrics = {
             "model_name":    model_name,
             "model_id":      model_spec["model_id"],
             "training_loss": train_result.training_loss,
@@ -631,9 +734,10 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
             "train_samples": len(train_dataset),
             "val_samples":   len(val_dataset),
             **gen_metrics,
+            "log_history_snapshot": trainer.state.log_history[-500:],  # Last 500 steps for quick post-hoc access
         }
         with open(adapter_dir / "training_metrics.json", "w") as f:
-            json.dump(metrics, f, indent=2)
+            json.dump(final_metrics, f, indent=2)
         log.info(f"[{model_name}] Adapter saved → {adapter_dir}")
 
     finally:
