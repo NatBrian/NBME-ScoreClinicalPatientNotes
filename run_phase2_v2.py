@@ -94,7 +94,7 @@ CONFIG = {
     "GRADIENT_ACCUMULATION": 2,       # effective batch = 8×2 = 16
     "LEARNING_RATE":         2e-4,
     "NUM_TRAIN_EPOCHS":      3,
-    "MAX_SEQ_LENGTH":        512,
+    "MAX_SEQ_LENGTH":        1024,
     "WARMUP_RATIO":          0.05,
     "LR_SCHEDULER":          "cosine",
     "WEIGHT_DECAY":          0.01,
