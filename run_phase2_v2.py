@@ -2,7 +2,7 @@
 """
 Phase 2 — Train SLM Ensemble (QLoRA)
 
-Group 1 — GPU 0: Qwen3-1.7B, Qwen3-8B, LFM2.5-1.2B  (~7.3h)
+Group 1 — GPU 0: Qwen3-1.7B, Qwen3-8B, LFM2.5-1.2B, Llama3.1-8B
 
 Run in background:
     nohup python run_phase2_group1.py > logs/phase2_group1.log 2>&1 &
@@ -54,6 +54,10 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 # ── LOGGING — stdout + file ───────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -103,6 +107,19 @@ CONFIG = {
 }
 
 MODEL_REGISTRY = [
+    {
+        "name":              "llama3_1_8b",
+        "model_id":          "meta-llama/Llama-3.1-8B-Instruct",
+        "model_class":       "causal_lm",
+        "compute_dtype":     torch.bfloat16,
+        "fp16":              False,
+        "bf16":              True,
+        "adapter_dir":       Path("./adapters/llama3_1_8b_adapter"),
+        "enable_thinking":   False,
+        "trust_remote_code": False,
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
+    },
     {
         "name":              "qwen3_1_7b",
         "model_id":          "Qwen/Qwen3-1.7B",
@@ -692,7 +709,7 @@ def main():
         log.info(f"GPU ready: {free_gb:.1f}/{total_gb:.1f} GB free")
 
     log.info("\n" + "="*65)
-    log.info("  PHASE 2 — Group 1: Qwen3-1.7B | Qwen3-8B | LFM2.5-1.2B")
+    log.info("  PHASE 2 — Group 1: Qwen3-1.7B | Qwen3-8B | LFM2.5-1.2B | Llama-3.1-8B-Instruct")
     log.info(f"  Models: {[m['name'] for m in MODEL_REGISTRY]}")
     log.info("="*65)
 
