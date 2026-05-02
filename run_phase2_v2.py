@@ -28,6 +28,8 @@ os.environ["MKL_NUM_THREADS"]        = N_THREADS
 os.environ["OPENBLAS_NUM_THREADS"]   = N_THREADS
 os.environ["NUMEXPR_NUM_THREADS"]    = N_THREADS
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["USE_TF"]                 = "0"
+os.environ["TRANSFORMERS_NO_TF"]     = "1"
 
 # ── IMPORTS ───────────────────────────────────────────────────────────────────
 import ast
@@ -35,6 +37,7 @@ import gc
 import json
 import logging
 from pathlib import Path
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -46,9 +49,11 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DataCollatorForSeq2Seq,
+    Trainer,
+    TrainingArguments,
     set_seed,
 )
-from trl import SFTConfig, SFTTrainer
 
 # ── LOGGING — stdout + file ───────────────────────────────────────────────────
 Path("logs").mkdir(exist_ok=True)
@@ -80,6 +85,7 @@ CONFIG = {
     "LORA_DROPOUT":          0.05,
     "LORA_TARGET_MODULES":   ["q_proj", "k_proj", "v_proj", "o_proj",
                               "gate_proj", "up_proj", "down_proj"],
+    "VAL_GENERATION_N":      128,
     "PER_DEVICE_BATCH_SIZE": 8,       # reduce to 4 if OOM
     "GRADIENT_ACCUMULATION": 2,       # effective batch = 8×2 = 16
     "LEARNING_RATE":         2e-4,
@@ -107,6 +113,8 @@ MODEL_REGISTRY = [
         "adapter_dir":       Path("./adapters/qwen3_1_7b_adapter"),
         "enable_thinking":   False,
         "trust_remote_code": False,
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
     },
     {
         "name":              "qwen3_8b",
@@ -118,6 +126,8 @@ MODEL_REGISTRY = [
         "adapter_dir":       Path("./adapters/qwen3_8b_adapter"),
         "enable_thinking":   False,
         "trust_remote_code": False,
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
+                                "gate_proj", "up_proj", "down_proj"],
     },
     {
         "name":              "lfm2_5_1_2b",
@@ -129,6 +139,7 @@ MODEL_REGISTRY = [
         "adapter_dir":       Path("./adapters/lfm2_5_1_2b_adapter"),
         "enable_thinking":   None,
         "trust_remote_code": True,
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "out_proj", "in_proj"],
     },
 ]
 
@@ -169,6 +180,8 @@ def load_and_merge_data(cfg: dict) -> pd.DataFrame:
     train_df["annotation"] = train_df["annotation"].apply(safe_parse_list)
 
     aug_path = cfg.get("AUG_CSV", data_dir / "augmented_train.csv")
+    if not aug_path.exists() and (data_dir / "augmented_train.csv").exists():
+        aug_path = data_dir / "augmented_train.csv"
     if aug_path.exists():
         aug_df = pd.read_csv(aug_path)
         aug_df["annotation"] = aug_df["annotation"].apply(safe_parse_list)
@@ -191,6 +204,14 @@ def load_and_merge_data(cfg: dict) -> pd.DataFrame:
         lambda r: feat_map.get((r["case_num"], r["feature_num"]), ""), axis=1
     )
     combined["assistant_target"] = combined["annotation"].apply(build_assistant_response)
+
+    span_counts = combined["annotation"].map(len)
+    log.info(
+        "  Targets: %d positive rows, %d empty rows",
+        int((span_counts > 0).sum()),
+        int((span_counts == 0).sum()),
+    )
+    log.info(f"  Span count distribution: {dict(sorted(Counter(span_counts).items()))}")
 
     before   = len(combined)
     combined = combined[
@@ -228,41 +249,110 @@ def make_train_val_datasets(df: pd.DataFrame, cfg: dict) -> tuple:
     return Dataset.from_pandas(train_df), Dataset.from_pandas(val_df)
 
 
-# ── SECTION 3 — Prompt Formatting ────────────────────────────────────────────
-def make_formatting_func(tokenizer, model_spec: dict):
+# ── SECTION 3 — Prompt Formatting & Tokenization ─────────────────────────────
+def build_messages(pn_history: str, feature_text: str, assistant_target: str = None) -> list:
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": (
+            f"Note: \"{(pn_history or '').strip()}\"\n"
+            f"Feature: {feature_text or ''}"
+        )},
+    ]
+    if assistant_target is not None:
+        messages.append({"role": "assistant", "content": assistant_target or '{"spans": []}'})
+    return messages
+
+
+def render_prompt(tokenizer, model_spec: dict, pn_history: str, feature_text: str) -> str:
     enable_thinking = model_spec.get("enable_thinking")
+    kwargs = dict(tokenize=False, add_generation_prompt=True)
+    if enable_thinking is not None:
+        kwargs["enable_thinking"] = enable_thinking
+    return tokenizer.apply_chat_template(
+        build_messages(pn_history, feature_text),
+        **kwargs,
+    )
 
-    def _format_single(pn_history, feature_text, asst_response) -> str:
-        messages = [
-            {"role": "system",    "content": SYSTEM_PROMPT},
-            {"role": "user",      "content": (
-                f"Note: \"{(pn_history or '').strip()}\"\n"
-                f"Feature: {feature_text or ''}"
-            )},
-            {"role": "assistant", "content": asst_response or '{"spans": []}'},
-        ]
-        kwargs = dict(tokenize=False, add_generation_prompt=False)
-        if enable_thinking is not None:
-            kwargs["enable_thinking"] = enable_thinking
-        return tokenizer.apply_chat_template(messages, **kwargs)
 
-    def formatting_func(examples):
-        if isinstance(examples["pn_history"], list):
-            return [
-                _format_single(
-                    examples["pn_history"][i],
-                    examples["feature_text"][i],
-                    examples["assistant_target"][i],
-                )
-                for i in range(len(examples["pn_history"]))
-            ]
-        return _format_single(
-            examples["pn_history"],
-            examples["feature_text"],
-            examples["assistant_target"],
+def render_training_text(tokenizer, model_spec: dict, pn_history: str,
+                         feature_text: str, assistant_target: str) -> str:
+    enable_thinking = model_spec.get("enable_thinking")
+    kwargs = dict(tokenize=False, add_generation_prompt=False)
+    if enable_thinking is not None:
+        kwargs["enable_thinking"] = enable_thinking
+    return tokenizer.apply_chat_template(
+        build_messages(pn_history, feature_text, assistant_target),
+        **kwargs,
+    )
+
+
+def tokenize_for_assistant_loss(example: dict, tokenizer, model_spec: dict, cfg: dict) -> dict:
+    prompt_text = render_prompt(tokenizer, model_spec, example["pn_history"], example["feature_text"])
+    full_text = render_training_text(
+        tokenizer,
+        model_spec,
+        example["pn_history"],
+        example["feature_text"],
+        example["assistant_target"],
+    )
+
+    tokenized = tokenizer(
+        full_text,
+        truncation=True,
+        max_length=cfg["MAX_SEQ_LENGTH"],
+        add_special_tokens=False,
+    )
+    prompt_ids = tokenizer(
+        prompt_text,
+        truncation=True,
+        max_length=cfg["MAX_SEQ_LENGTH"],
+        add_special_tokens=False,
+    )["input_ids"]
+
+    labels = list(tokenized["input_ids"])
+    prompt_len = min(len(prompt_ids), len(labels))
+    labels[:prompt_len] = [-100] * prompt_len
+    if all(label == -100 for label in labels):
+        raise ValueError("All labels were masked; increase MAX_SEQ_LENGTH or inspect chat template.")
+    tokenized["labels"] = labels
+    return tokenized
+
+
+def prepare_tokenized_datasets(train_dataset: Dataset, val_dataset: Dataset,
+                               tokenizer, model_spec: dict, cfg: dict) -> tuple:
+    def _map(example):
+        return tokenize_for_assistant_loss(example, tokenizer, model_spec, cfg)
+
+    train_tok = train_dataset.map(_map, remove_columns=train_dataset.column_names)
+    val_tok = val_dataset.map(_map, remove_columns=val_dataset.column_names)
+    return train_tok, val_tok
+
+
+def validate_token_lengths(df: pd.DataFrame, tokenizer, model_spec: dict, cfg: dict) -> None:
+    lengths = []
+    for row in df.itertuples(index=False):
+        text = render_training_text(
+            tokenizer,
+            model_spec,
+            row.pn_history,
+            row.feature_text,
+            row.assistant_target,
         )
-
-    return formatting_func
+        lengths.append(len(tokenizer(text, add_special_tokens=False)["input_ids"]))
+    arr = np.array(lengths)
+    log.info(
+        "[%s] token lengths: p50=%d p90=%d p99=%d max=%d",
+        model_spec["name"],
+        int(np.percentile(arr, 50)),
+        int(np.percentile(arr, 90)),
+        int(np.percentile(arr, 99)),
+        int(arr.max()),
+    )
+    too_long = int((arr > cfg["MAX_SEQ_LENGTH"]).sum())
+    if too_long:
+        raise ValueError(
+            f"{model_spec['name']}: {too_long} rows exceed MAX_SEQ_LENGTH={cfg['MAX_SEQ_LENGTH']}"
+        )
 
 
 # ── SECTION 4 — Model & Tokenizer Loading ────────────────────────────────────
@@ -314,25 +404,45 @@ def build_lora_config(cfg: dict, model_spec: dict = None) -> LoraConfig:
     )
 
 
+def validate_lora_injection(model, model_spec: dict) -> None:
+    target_modules = model_spec.get("lora_target_modules") or CONFIG["LORA_TARGET_MODULES"]
+    if isinstance(target_modules, str):
+        log.info("[%s] LoRA target regex: %s", model_spec["name"], target_modules)
+        return
+
+    adapted = [
+        name for name, module in model.named_modules()
+        if hasattr(module, "lora_A") or hasattr(module, "lora_B")
+    ]
+    counts = {
+        target: sum(name.endswith(f".{target}") or name == target for name in adapted)
+        for target in target_modules
+    }
+    missing = [target for target, count in counts.items() if count == 0]
+    log.info("[%s] LoRA module counts: %s", model_spec["name"], counts)
+    if missing:
+        raise ValueError(f"{model_spec['name']}: LoRA targets not found: {missing}")
+
+
 def apply_lora(model, lora_config: LoraConfig):
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    model.config.use_cache = False
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
     return model
 
 
-# ── SECTION 6 — SFT Config ───────────────────────────────────────────────────
-def build_sft_config(model_spec: dict, adapter_dir: Path, cfg: dict) -> SFTConfig:
-    return SFTConfig(
+# ── SECTION 6 — Training Config ──────────────────────────────────────────────
+def build_training_args(model_spec: dict, adapter_dir: Path, cfg: dict) -> TrainingArguments:
+    return TrainingArguments(
         output_dir                   = str(adapter_dir / "checkpoints"),
-        packing                      = False,
-        max_length                   = cfg["MAX_SEQ_LENGTH"],
         num_train_epochs             = cfg["NUM_TRAIN_EPOCHS"],
         max_steps                    = cfg["MAX_STEPS"],
         per_device_train_batch_size  = cfg["PER_DEVICE_BATCH_SIZE"],
         per_device_eval_batch_size   = cfg["PER_DEVICE_BATCH_SIZE"],
         gradient_accumulation_steps  = cfg["GRADIENT_ACCUMULATION"],
         gradient_checkpointing       = True,
+        gradient_checkpointing_kwargs = {"use_reentrant": False},
         learning_rate                = cfg["LEARNING_RATE"],
         weight_decay                 = cfg["WEIGHT_DECAY"],
         warmup_ratio                 = cfg["WARMUP_RATIO"],
@@ -356,6 +466,80 @@ def build_sft_config(model_spec: dict, adapter_dir: Path, cfg: dict) -> SFTConfi
     )
 
 
+def parse_spans(raw_text: str) -> list:
+    try:
+        parsed = json.loads(raw_text.strip())
+    except json.JSONDecodeError:
+        start = raw_text.find("{")
+        end = raw_text.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            parsed = json.loads(raw_text[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+    spans = parsed.get("spans", []) if isinstance(parsed, dict) else []
+    return [s.strip() for s in spans if isinstance(s, str) and s.strip()]
+
+
+def spans_to_char_set(note: str, spans: list) -> set:
+    chars = set()
+    for span in spans:
+        start = note.find(span)
+        while start != -1:
+            chars.update(range(start, start + len(span)))
+            start = note.find(span, start + 1)
+    return chars
+
+
+def run_validation_generation(model, tokenizer, model_spec: dict,
+                              val_dataset: Dataset, cfg: dict) -> dict:
+    n_eval = min(cfg.get("VAL_GENERATION_N", 0), len(val_dataset))
+    if n_eval <= 0:
+        return {}
+
+    subset = val_dataset.select(range(n_eval))
+    model.eval()
+    parse_ok = contained_ok = empty_correct = 0
+    tp = fp = fn = 0
+
+    for row in subset:
+        prompt = render_prompt(tokenizer, model_spec, row["pn_history"], row["feature_text"])
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=128,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        new_tokens = generated[0, inputs["input_ids"].shape[1]:]
+        raw = tokenizer.decode(new_tokens, skip_special_tokens=True)
+        pred_spans = parse_spans(raw)
+        true_spans = safe_parse_list(row["annotation"]) if isinstance(row["annotation"], str) else row["annotation"]
+
+        parse_ok += int(raw.strip().startswith("{") or bool(pred_spans) or '"spans"' in raw)
+        contained_ok += int(all(span in row["pn_history"] for span in pred_spans))
+        empty_correct += int((len(true_spans) == 0) == (len(pred_spans) == 0))
+
+        pred_chars = spans_to_char_set(row["pn_history"], pred_spans)
+        true_chars = spans_to_char_set(row["pn_history"], true_spans)
+        tp += len(pred_chars & true_chars)
+        fp += len(pred_chars - true_chars)
+        fn += len(true_chars - pred_chars)
+
+    char_f1 = (2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) else 1.0
+    metrics = {
+        "val_gen_n": n_eval,
+        "val_jsonish_rate": parse_ok / n_eval,
+        "val_contained_rate": contained_ok / n_eval,
+        "val_empty_accuracy": empty_correct / n_eval,
+        "val_char_f1": char_f1,
+    }
+    log.info("[%s] validation generation metrics: %s", model_spec["name"], metrics)
+    return metrics
+
+
 # ── SECTION 7 — Train One Model ───────────────────────────────────────────────
 def train_one_model(model_spec: dict, train_dataset: Dataset,
                     val_dataset: Dataset, cfg: dict) -> None:
@@ -372,24 +556,43 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
     log.info(f"  Training: {model_name}  ({model_spec['model_id']})")
     log.info(f"{'='*65}")
 
-    model = tokenizer = trainer = lora_config = bnb_config = sft_config = fmt_func = None
+    model = tokenizer = trainer = lora_config = bnb_config = training_args = None
+    train_tok = val_tok = data_collator = None
     try:
         bnb_config       = build_bnb_config(model_spec["compute_dtype"])
         model, tokenizer = load_model_and_tokenizer(model_spec, bnb_config)
+        validate_token_lengths(
+            pd.concat([train_dataset.to_pandas(), val_dataset.to_pandas()], ignore_index=True),
+            tokenizer,
+            model_spec,
+            cfg,
+        )
 
         lora_config = build_lora_config(cfg, model_spec)
         model       = apply_lora(model, lora_config)
+        validate_lora_injection(model, model_spec)
 
-        fmt_func   = make_formatting_func(tokenizer, model_spec)
-        sft_config = build_sft_config(model_spec, adapter_dir, cfg)
+        train_tok, val_tok = prepare_tokenized_datasets(
+            train_dataset,
+            val_dataset,
+            tokenizer,
+            model_spec,
+            cfg,
+        )
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer=tokenizer,
+            label_pad_token_id=-100,
+            pad_to_multiple_of=8,
+        )
+        training_args = build_training_args(model_spec, adapter_dir, cfg)
 
-        trainer = SFTTrainer(
+        trainer = Trainer(
             model            = model,
             processing_class = tokenizer,
-            args             = sft_config,
-            train_dataset    = train_dataset,
-            eval_dataset     = val_dataset,
-            formatting_func  = fmt_func,
+            args             = training_args,
+            train_dataset    = train_tok,
+            eval_dataset     = val_tok,
+            data_collator    = data_collator,
         )
 
         log.info(f"[{model_name}] Starting training ...")
@@ -401,6 +604,7 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
 
         model.save_pretrained(str(adapter_dir))
         tokenizer.save_pretrained(str(adapter_dir))
+        gen_metrics = run_validation_generation(model, tokenizer, model_spec, val_dataset, cfg)
 
         metrics = {
             "model_name":    model_name,
@@ -409,6 +613,7 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
             "global_step":   train_result.global_step,
             "train_samples": len(train_dataset),
             "val_samples":   len(val_dataset),
+            **gen_metrics,
         }
         with open(adapter_dir / "training_metrics.json", "w") as f:
             json.dump(metrics, f, indent=2)
@@ -416,7 +621,8 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
 
     finally:
         log.info(f"[{model_name}] Cleaning up VRAM ...")
-        del trainer, model, tokenizer, fmt_func, sft_config, lora_config, bnb_config
+        del trainer, model, tokenizer, train_tok, val_tok
+        del data_collator, training_args, lora_config, bnb_config
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -456,7 +662,7 @@ def main():
         log.warning("HF_TOKEN not set — llama3_1_8b will fail (gated model)")
 
     import importlib.metadata as meta
-    for pkg in ["transformers", "trl", "peft", "bitsandbytes", "accelerate"]:
+    for pkg in ["transformers", "peft", "bitsandbytes", "accelerate"]:
         try:
             log.info(f"  {pkg}: {meta.version(pkg)}")
         except meta.PackageNotFoundError:
@@ -469,9 +675,10 @@ def main():
             sys.exit(1)
         log.info(f"  {f}: found")
 
-    aug_path = cfg["AUG_CSV"]
-    if aug_path.exists():
-        log.info(f"  augmented_train.csv: found")
+    aug_candidates = [cfg["AUG_CSV"], cfg["DATA_DIR"] / "augmented_train.csv"]
+    aug_path = next((path for path in aug_candidates if path.exists()), None)
+    if aug_path:
+        log.info(f"  augmented_train.csv: found at {aug_path}")
     else:
         log.warning("  augmented_train.csv: not found — training on train.csv only")
 
