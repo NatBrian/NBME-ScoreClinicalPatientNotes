@@ -1,0 +1,8 @@
+{
+  "model_name": "lfm2_5_1_2b",
+  "model_id": "LiquidAI/LFM2.5-1.2B-Instruct",
+  "training_loss": 1.1281842455094104,
+  "global_step": 6516,
+  "train_samples": 34737,
+  "val_samples": 9162
+}

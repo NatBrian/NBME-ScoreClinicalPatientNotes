@@ -1,0 +1,5 @@
+These supporting notebooks serve as prerequisite dependencies for the Phase 3 inference notebook. 
+
+Because the NBME competition enforces strict internet isolation during scoring, this architecture decouples dependency acquisition from runtime execution:
+- **Pre-provisioning:** These notebooks download and cache all required PyPI packages (as offline wheels) and model checkpoints.
+- **Offline Execution:** Artifacts are versioned as Kaggle Datasets and mounted into the Phase 3 notebook, ensuring deterministic, zero-network operation during inference.
