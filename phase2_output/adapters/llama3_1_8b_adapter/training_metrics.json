@@ -1,8 +1,0 @@
-{
-  "model_name": "llama3_1_8b",
-  "model_id": "meta-llama/Llama-3.1-8B-Instruct",
-  "training_loss": 0.1889395609708415,
-  "global_step": 6516,
-  "train_samples": 34737,
-  "val_samples": 9162
-}

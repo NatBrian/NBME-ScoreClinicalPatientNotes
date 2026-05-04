@@ -1,8 +1,0 @@
-{
-  "model_name": "gemma_4_e4b",
-  "model_id": "google/gemma-4-E4B-it",
-  "training_loss": 0.24156043495116167,
-  "global_step": 6516,
-  "train_samples": 34737,
-  "val_samples": 9162
-}

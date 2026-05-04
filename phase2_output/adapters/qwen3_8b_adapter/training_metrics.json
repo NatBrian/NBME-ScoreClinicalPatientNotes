@@ -1,8 +1,0 @@
-{
-  "model_name": "qwen3_8b",
-  "model_id": "Qwen/Qwen3-8B",
-  "training_loss": 0.21648669777068716,
-  "global_step": 6516,
-  "train_samples": 34737,
-  "val_samples": 9162
-}
