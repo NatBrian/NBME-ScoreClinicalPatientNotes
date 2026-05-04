@@ -1,0 +1,7 @@
+# Phase 2 adapters (large model files - upload to Kaggle dataset instead)
+phase2_output/adapters/**
+phase2_output/adapters_old/**
+
+# Training checkpoints
+phase2_output/adapters/*/checkpoints/
+**/checkpoint-*/

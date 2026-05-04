@@ -1,24 +1,191 @@
-These supporting notebooks serve as prerequisite dependencies for the Phase 3 inference notebook. 
+# Supporting Notebooks as Kaggle Dataset
 
-Because the NBME competition enforces strict internet isolation during scoring, this architecture decouples dependency acquisition from runtime execution:
-- **Pre-provisioning:** These notebooks download and cache all required PyPI packages (as offline wheels) and model checkpoints.
-- **Offline Execution:** Artifacts are versioned as Kaggle Datasets and mounted into the Phase 3 notebook, ensuring deterministic, zero-network operation during inference.
+## Purpose
 
-Usage:
-- 3_kaggle_inference.ipynb
-    - pip-wheel.ipynb
-    - gemma-4-e4b.ipynb
-    - qwen-35-4b.ipynb
-    - qwen-35-9b.ipynb
+Kaggle's NBME competition **disables internet during inference**, so all dependencies must be pre-loaded. These notebooks solve this by downloading models and packages *once* on Kaggle (with internet ON), then saving them as re-usable Kaggle datasets/notebooks.
 
-- 3_kaggle_inference_v2.ipynb
-    - pip-wheel-v2.ipynb
-    - lfm2-5-1-2b.ipynb
-    - qwen3-1-7b.ipynb
-    - qwen3-8b.ipynb
+### Architecture
 
-- 3_kaggle_inference_pretrained_only.ipynb
-    - pip-wheel-v2.ipynb
-    - lfm2-5-1-2b.ipynb
-    - qwen3-1-7b.ipynb
-    - qwen3-8b.ipynb
+```
+supporting_notebooks_as_dataset/
+├── pip-wheel-v2.ipynb          # Download Python wheels (vLLM, transformers, etc.)
+├── qwen3-1-7b.ipynb           # Download Qwen3.1-7B model
+├── qwen3-8b.ipynb              # Download Qwen3-8B model
+├── lfm2-5-1-2b.ipynb          # Download LFM2.5-1.2B model
+├── qwen3-1-7b.ipynb           # Download Qwen3.1-7B model
+├── llama-3-1-8b-instruct.ipynb   # Download LLaMA3.1-8B model
+├── mistral-7b-instruct-v03.ipynb  # Download Mistral-7B (legacy)
+├── qwen-35-4b.ipynb              # Download Qwen3.5-4B (legacy)
+├── qwen-35-9b.ipynb              # Download Qwen3.5-9B (legacy)
+├── gemma-4-e4b.ipynb             # Download Gemma-4-E4B (legacy)
+└── pip-wheel.ipynb                # Download wheels (v1, legacy)
+```
+
+Each notebook:
+1. Runs **with internet ON** to download from HuggingFace / PyPI
+2. Saves artifacts to `/kaggle/output/` with **"Files only"** persistence
+3. Gets "Saved & Committed" to become a versioned Kaggle resource
+
+---
+
+## Quick Start: Setting Up for Phase 3 Inference
+
+### Step 1: Run Pip-Wheel Notebook (v2)
+
+1. Open `pip-wheel-v2.ipynb` on Kaggle
+2. Turn **Internet ON**
+3. Set **Persistence**: `Files only` (not "Files + Versioned Output")
+4. Run all cells → downloads vLLM 0.17.1 + dependencies as wheels
+5. **Save & Commit** → note the notebook version URL
+
+### Step 2: Run Model Download Notebooks (v2)
+
+For each model notebook, repeat:
+
+| Notebook | Model | Output Path |
+|----------|-------|-------------|
+| `qwen3-1-7b.ipynb` | Qwen3.1-7B-Instruct | `/kaggle/output/models/Qwen3_1_7B_Instruct/` |
+| `qwen3-8b.ipynb` | Qwen3-8B | `/kaggle/output/models/Qwen3_8B_Instruct/` |
+| `lfm2-5-1-2b.ipynb` | LFM2.5-1.2B-Instruct | `/kaggle/output/models/LFM2_5_1_2B_Instruct/` |
+
+Steps per notebook:
+1. Open notebook → **Internet ON**
+2. **Persistence**: `Files only`
+3. Run all cells → downloads model weights
+4. **Save & Commit**
+
+### Step 3: Attach to Phase 3 Inference Notebook
+
+In `3_kaggle_inference_v2.ipynb`, attach these as inputs:
+
+| Input Type | Source | Purpose |
+|------------|--------|---------|
+| Notebook | `qwen3-1-7b-instruct` (from Step 2) | Qwen3.1-7B base model |
+| Notebook | `qwen3-8b-instruct` (from Step 2) | Qwen3-8B base model |
+| Notebook | `lfm2-5-1-2b-instruct` (from Step 2) | LFM2.5-1.2B base model |
+| Notebook | `0-kaggle-setup-nbme-score-clinical-pip-wheel-v2` (from Step 1) | Pre-built Python wheels |
+
+### Step 4: Configure MODEL_REGISTRY
+
+```python
+MODEL_REGISTRY = [
+    {
+        "name":            "qwen3_1_7b",
+        "model_path":      "/kaggle/input/notebooks/natbrian/qwen3-1-7b-instruct/models/Qwen3_1_7B_Instruct",
+        "vllm_dtype":     "half",
+        "tp":              1,
+        "adapter_path":    "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v3/adapters/qwen3_1_7b_adapter",
+        "enable_thinking": False,
+        "trust_remote_code": False,
+    },
+    {
+        "name":            "qwen3_8b",
+        "model_path":      "/kaggle/input/notebooks/natbrian/qwen3-8b-instruct/models/Qwen3_8B_Instruct",
+        "vllm_dtype":     "half",
+        "tp":              2,  # Uses both T4 GPUs
+        "adapter_path":    "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v3/adapters/qwen3_8b_adapter",
+        "enable_thinking": False,
+        "trust_remote_code": False,
+    },
+    {
+        "name":            "lfm2_5_1_2b",
+        "model_path":      "/kaggle/input/notebooks/natbrian/lfm2-5-1-2b-instruct/models/LFM2_5_1_2B_Instruct",
+        "vllm_dtype":     "half",
+        "tp":              1,
+        "adapter_path":    "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v3/adapters/lfm2_5_1_2b_adapter",
+        "enable_thinking": False,
+        "trust_remote_code": True,  # LFM2.5 requires this
+    },
+]
+```
+
+---
+
+## Notebook Reference
+
+### v2 Notebooks (Current)
+
+| Notebook | Purpose | Used By |
+|----------|---------|---------|
+| `pip-wheel-v2.ipynb` | Download vLLM 0.17.1, transformers 4.56.0, rapidfuzz, peft, etc. as `.whl` files | `3_kaggle_inference_v2.ipynb` |
+| `qwen3-1-7b.ipynb` | Download `Qwen/Qwen3.1-7B-Instruct` model weights | `3_kaggle_inference_v2.ipynb` |
+| `qwen3-8b.ipynb` | Download `Qwen/Qwen3-8B` model weights | `3_kaggle_inference_v2.ipynb` |
+| `lfm2-5-1-2b.ipynb` | Download `LiquidAI/LFM2.5-1.2B-Instruct` model weights | `3_kaggle_inference_v2.ipynb` |
+| `llama-3-1-8b-instruct.ipynb` | Download LLaMA3.1-8B | `3_kaggle_inference_v2.ipynb` |
+
+### v1 Notebooks (Legacy)
+
+| Notebook | Purpose | Used By |
+|----------|---------|---------|
+| `pip-wheel.ipynb` | Download older package versions | `3_kaggle_inference.ipynb` |
+| `qwen-35-4b.ipynb` | Download Qwen3.5-4B (v1) | `3_kaggle_inference.ipynb` |
+| `qwen-35-9b.ipynb` | Download Qwen3.5-9B (v1) | `3_kaggle_inference.ipynb` |
+| `gemma-4-e4b.ipynb` | Download Gemma-4-E4B-IT (v1) | `3_kaggle_inference.ipynb` |
+| `mistral-7b-instruct-v03.ipynb` | Download Mistral-7B (v1, unused) | — |
+
+---
+
+## Usage Matrix
+
+| Phase 3 Notebook | Required Pip-Wheel | Required Model Notebooks |
+|------------------|-------------------|-------------------------|
+| `3_kaggle_inference_v2.ipynb` | `pip-wheel-v2.ipynb` | `qwen3-1-7b.ipynb`, `qwen3-8b.ipynb`, `lfm2-5-1-2b.ipynb`, `llama-3-1-8b-instruct.ipynb` |
+| `3_kaggle_inference_pretrained_only_v2.ipynb` | `pip-wheel-v2.ipynb` | `qwen3-1-7b.ipynb`, `qwen3-8b.ipynb`, `lfm2-5-1-2b.ipynb` |
+| `3_kaggle_inference.ipynb` (legacy) | `pip-wheel.ipynb` | `qwen-35-4b.ipynb`, `qwen-35-9b.ipynb`, `gemma-4-e4b.ipynb` |
+
+---
+
+## How It Works
+
+### Pip-Wheel Notebook
+
+Downloads Python packages as `.whl` files to `/kaggle/output/wheels/`:
+
+```python
+packages = [
+    "vllm==0.17.1",
+    "transformers==4.56.0",
+    "rapidfuzz>=3.0.0",
+    "peft>=0.15.0",
+    "accelerate>=1.0.0",
+    "bitsandbytes>=0.45.0",
+    "tokenizers>=0.22.0",
+    ...
+]
+```
+
+During Phase 3 inference (internet OFF), install from local wheels:
+```python
+subprocess.check_call([
+    sys.executable, "-m", "pip", "install",
+    "--no-index",
+    "--find-links", WHEELS,
+    *PACKAGES,
+])
+```
+
+### Model Download Notebooks
+
+Each notebook downloads a HuggingFace model and saves it to `/kaggle/output/models/<model_name>/`:
+
+```python
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="Qwen/Qwen3.1-7B-Instruct",
+    local_dir="/kaggle/output/models/Qwen3_1_7B_Instruct",
+    local_dir_use_symlinks=False,  # Kaggle needs real files
+)
+```
+
+---
+
+## Troubleshooting
+
+**"Files only" not set**: If persistence is set to "Files + Versioned Output", Kaggle will version gigabytes of model weights across commits — set to "Files only" before running.
+
+**Model path not found**: Ensure the `model_path` in `MODEL_REGISTRY` matches the exact output path from the download notebook (check for case sensitivity).
+
+**Wheels not found**: Verify the pip-wheel notebook was saved & committed, and the notebook version is attached as an input in Phase 3.
+
+**Disk space**: Each model is ~15-16GB. Kaggle output quota is 500GB — more than enough for 3 models + wheels.

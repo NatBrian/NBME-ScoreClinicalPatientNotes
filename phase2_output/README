@@ -1,0 +1,127 @@
+# Phase 2 Output — LoRA Adapters for Kaggle Inference
+
+This directory contains the trained LoRA adapters and supporting files for Kaggle inference.
+
+## Directory Structure
+
+```
+phase2_output/
+├── README                          # This file
+├── phase2_lora_training_report.ipynb  # Training metrics and analysis
+└── adapters/
+    ├── qwen3_1_7b_adapter/       # Qwen3.1-7B Instruct (v2)
+    ├── qwen3_8b_adapter/         # Qwen3-8B (v2)
+    ├── lfm2_5_1_2b_adapter/      # LiquidAI LFM2.5-1.2B Instruct (v2)
+    ├── llama3_1_8b_adapter/      # LLaMA3.1-8B Instruct (v2)
+└── adapters_old/
+    ├── qwen_35_4b_adapter/       # Qwen3.5-4B (v1)
+    ├── qwen_35_9b_adapter/       # Qwen3.5-9B (v1)
+    └── gemma_4_e4b_adapter/      # Gemma-4-E4B-IT (v1)
+```
+
+## Using Adapters on Kaggle
+
+### Step 1: Upload as Kaggle Dataset
+
+1. Create a new Kaggle dataset (private)
+2. Upload the entire `phase2_output/adapters/` directory
+3. Note the dataset URL slug (e.g., `natbrian/adapter-nbme-score-clinical-v3`)
+
+### Step 2: Configure Model Registry in Phase 3 Notebook
+
+In your Kaggle inference notebook (e.g., `3_kaggle_inference_v2.ipynb`), configure `MODEL_REGISTRY`:
+
+```python
+MODEL_REGISTRY = [
+    {
+        "name":            "qwen3_1_7b",
+        "model_path":      "/kaggle/input/notebooks/natbrian/qwen3-1-7b-instruct/models/Qwen3_1_7B_Instruct",
+        "vllm_dtype":      "half",
+        "tp":              1,          # Tensor parallelism: 1 GPU
+        "adapter_path":    "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v3/adapters/qwen3_1_7b_adapter",
+        "enable_thinking": False,
+        "trust_remote_code": False,
+    },
+    {
+        "name":            "qwen3_8b",
+        "model_path":      "/kaggle/input/notebooks/natbrian/qwen3-8b-instruct/models/Qwen3_8B_Instruct",
+        "vllm_dtype":      "half",
+        "tp":              2,          # Tensor parallelism: 2 GPUs (T4 x2)
+        "adapter_path":    "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v3/adapters/qwen3_8b_adapter",
+        "enable_thinking": False,
+        "trust_remote_code": False,
+    },
+    {
+        "name":            "lfm2_5_1_2b",
+        "model_path":      "/kaggle/input/notebooks/natbrian/lfm2-5-1-2b-instruct/models/LFM2_5_1_2B_Instruct",
+        "vllm_dtype":      "half",
+        "tp":              1,
+        "adapter_path":    "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v3/adapters/lfm2_5_1_2b_adapter",
+        "enable_thinking": False,
+        "trust_remote_code": True,     # LFM2.5 requires trust_remote_code
+    },
+]
+```
+
+### Step 3: Required Kaggle Inputs
+
+Your Kaggle notebook needs these inputs attached:
+
+| Input Type | Source | Purpose |
+|------------|--------|---------|
+| Competition | `nbme-score-clinical-patient-notes` | Test data (`test.csv`, `patient_notes.csv`, `features.csv`) |
+| Dataset | `adapter-nbme-score-clinical-v3` | LoRA adapters (this directory) |
+| Notebook | `qwen3-1-7b-instruct` | Base model weights (vLLM path) |
+| Notebook | `qwen3-8b-instruct` | Base model weights (vLLM path) |
+| Notebook | `lfm2-5-1-2b-instruct` | Base model weights (vLLM path) |
+| Notebook | `0-kaggle-setup-nbme-score-clinical-pip-wheel-v2` | Pre-built wheels (vLLM, transformers, etc.) |
+
+### Step 4: Hardware & Settings
+
+- **Accelerator**: T4 x2 (double T4)
+- **Internet**: OFF (competition requirement)
+- **Docker Image**: Default Kaggle GPU image
+
+## Adapter Details
+
+Each adapter directory contains:
+
+| File | Purpose |
+|------|---------|
+| `adapter_config.json` | LoRA configuration (r=16, alpha=32, etc.) |
+| `adapter_model.safetensors` | Trained LoRA weights (~100MB) |
+| `tokenizer.json` | Tokenizer vocabulary |
+| `tokenizer_config.json` | Tokenizer settings |
+| `chat_template.jinja` | Chat template for inference |
+| `README.md` | Per-adapter training notes |
+| `training_metrics.json` | Loss/metrics from training |
+| `config_snapshot.json` | Snapshot of training config |
+
+## Legacy Adapters (v1)
+
+The following adapters were trained with the original `2_train_slm_ensemble.ipynb`:
+
+- `qwen_35_4b_adapter/` — Qwen3.5-4B (v1 pipeline)
+- `qwen_35_9b_adapter/` — Qwen3.5-9B (v1 pipeline)
+- `gemma_4_e4b_adapter/` — Gemma-4-E4B-IT (v1 pipeline)
+
+These can be used with `3_kaggle_inference.ipynb` (transformers-only, no vLLM).
+
+## Switching Adapter Versions
+
+To use a different adapter version, update the `adapter_path` in `MODEL_REGISTRY`:
+
+```python
+# Example: switch to legacy Qwen3.5-9B adapter
+"adapter_path": "/kaggle/input/datasets/natbrian/adapter-nbme-score-clinical-v1/adapters/qwen_35_9b_adapter",
+```
+
+## Troubleshooting
+
+**Adapter not found**: Verify the dataset is attached and the path matches exactly (case-sensitive).
+
+**Shape mismatch**: Ensure `LORA_RANK` in inference CONFIG matches the rank used during training (default: 16).
+
+**vLLM errors**: Check that `tp` (tensor parallelism) matches the number of GPUs and model size:
+- 1.2B-7B models: `tp=1` (single GPU)
+- 8B+ models: `tp=2` (both T4s)
