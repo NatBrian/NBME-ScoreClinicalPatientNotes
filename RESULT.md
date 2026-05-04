@@ -1,15 +1,15 @@
 # Results
 
-| Model / Combination                                            | Pretrained Only + Few Shot |      LoRA Adapter | LoRA Adapter v2 |
-| -------------------------------------------------------------- | -------------------------: | ----------------: | --------------: |
-| Qwen3-1.7B                                                     |               0.48093 (V5) |     0.60103 (V16) |   0.64721 (V25) |
-| Qwen3-8B                                                       |               0.49500 (V3) |     0.66226 (V10) |   0.66552 (V24) |
-| Llama-3.1-8B                                                   |                          - |     0.64465 (V11) |   0.66515 (V23) |
-| LFM2.5-1.2B / LFM2.5                                           |                          - |     0.43482 (V17) |   0.62867 (V26) |
-| Qwen3-1.7B + Qwen3-8B + LFM2.5-1.2B                            |               0.53125 (V6) |  0.67778 (V6 SP2) |   0.67900 (V22) |
-| Qwen3-8B + Llama-3.1-8B + Qwen3-1.7B + LFM2.5-1.2B             |                          - |     0.70143 (V15) |   0.69971 (V21) |
-| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       |                          - | **0.70180 (V14)** |   0.69419 (V29) |
-| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B x2 + LFM2.5-1.2B x2 |                          - |     0.70160 (V18) |   0.69909 (V27) |
+| Model / Combination                                            | Pretrained Only + Few Shot |      LoRA Adapter | LoRA Adapter v2 | Full Fine Tuning |
+| -------------------------------------------------------------- | -------------------------: | ----------------: | --------------: | ------------------: |
+| Qwen3-1.7B                                                     |               0.48093 (V5) |     0.60103 (V16) |   0.64721 (V25) |   0.11256 (V4) |
+| Qwen3-8B                                                       |               0.49500 (V3) |     0.66226 (V10) |   0.66552 (V24) |   0.50343 (V5) |
+| Llama-3.1-8B                                                   |                          - |     0.64465 (V11) |   0.66515 (V23) |                          - |
+| LFM2.5-1.2B / LFM2.5                                           |                          - |     0.43482 (V17) |   0.62867 (V26) |   0.49203 (V3) |
+| Qwen3-1.7B + Qwen3-8B + LFM2.5-1.2B                            |               0.53125 (V6) |  0.67778 (V6 SP2) |   0.67900 (V22) |   0.62569 (V2) |
+| Qwen3-8B + Llama-3.1-8B + Qwen3-1.7B + LFM2.5-1.2B             |                          - |     0.70143 (V15) |   0.69971 (V21) |                          - |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       |                          - | **0.70180 (V14)** |   0.69419 (V29) |                          - |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B x2 + LFM2.5-1.2B x2 |                          - |     0.70160 (V18) |   0.69909 (V27) |                          - |
 
 ## Pretrained Only Model with Few Shot
 
@@ -253,3 +253,37 @@ SYSTEM_PROMPT = (
    - **VOTE_THRESHOLD:** 4
    - **Score:** 0.69419
    - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 29`
+
+
+## Full Fine Tuning
+
+| # | Models | VOTE_THRESHOLD | Score | Submission |
+|---|--------|----------------|-------|------------|
+| 1 | Qwen3-8B + Qwen3-1.7B + LFM2.5 | 2 | 0.62569 | Ver 2 |
+| 2 | LFM2.5 | 1 | 0.49203 | Ver 3 |
+| 3 | Qwen3-1.7B | 1 | 0.11256 | Ver 4 |
+| 4 | Qwen3-8B | 1 | 0.50343 | Ver 5 |
+
+1.
+   - **Models:** Qwen/Qwen3-8B-finetuned + Qwen/Qwen3-1.7B-finetuned + LiquidAI/LFM2.5-1.2B-Instruct-finetuned
+   - **VOTE_THRESHOLD:** 2
+   - **Score:** 0.62569
+   - **Submission:** `3-kaggle-inference-finetuned-nbme-score - Version 2`
+
+2.
+   - **Models:** LiquidAI/LFM2.5-1.2B-Instruct-finetuned
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.49203
+   - **Submission:** `3-kaggle-inference-finetuned-nbme-score - Version 3`
+
+3.
+   - **Models:** Qwen/Qwen3-1.7B-finetuned
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.11256
+   - **Submission:** `3-kaggle-inference-finetuned-nbme-score - Version 4`
+
+4.
+   - **Models:** Qwen/Qwen3-8B
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.50343
+   - **Submission:** `3-kaggle-inference-finetuned-nbme-score - Version 5`

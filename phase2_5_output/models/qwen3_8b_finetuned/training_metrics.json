@@ -1,0 +1,10 @@
+{
+  "model_id": "Qwen/Qwen3-8B",
+  "finetune_type": "full",
+  "training_loss": 0.5631171837403337,
+  "global_step": 6516,
+  "train_samples": 34737,
+  "val_samples": 9162,
+  "learning_rate": 1e-05,
+  "epochs": 3
+}

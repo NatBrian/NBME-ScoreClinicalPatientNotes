@@ -1,0 +1,9 @@
+{
+  "run_id": "checkpoints",
+  "final_step": 6516,
+  "final_epoch": 3.0,
+  "max_steps_planned": -1,
+  "total_eval_steps": 14,
+  "metrics_csv": "models/qwen3_1_7b_finetuned/metrics/training_timeline.csv",
+  "trainer_state_json": "models/qwen3_1_7b_finetuned/trainer_state.json"
+}
