@@ -8,7 +8,7 @@
 | LFM2.5-1.2B                                                    | -                          | 0.43482 (V17)      | 0.62867 (V26)     | 0.63392 (V42)                 | 0.49203 (V3)      |
 | Qwen3-1.7B + Qwen3-8B + LFM2.5-1.2B                            | 0.53125 (V6)               | 0.67778 (V6 SP2)   | 0.67900 (V22)     | 0.71046 (V38)                 | 0.62569 (V2)      |
 | Qwen3-8B + Llama-3.1-8B + Qwen3-1.7B + LFM2.5-1.2B             | -                          | 0.70143 (V15)      | 0.69971 (V21)     | 0.73195 (V37)                 | -                 |
-| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       | -                          | **0.70180 (V14)**  | 0.69419 (V29)     | 0.7X (temp)                            | -                 |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       | -                          | **0.70180 (V14)**  | 0.69419 (V29)     | 0.73249 (V43)                 | -                 |
 | Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B x2 + LFM2.5-1.2B x2 | -                          | 0.70160 (V18)      | 0.69909 (V27)     | 0.7X (temp)                            | -                 |
 | Llama-3.1-8B + Qwen/Qwen3-8B + Mistral-7B                      | 0.53762 (V2)               | -                  | -                 | -                            | -                 |
 
@@ -296,7 +296,7 @@ SYSTEM_PROMPT = (
 7.
    - **Models:** meta-llama/Llama-3.1-8B-Instruct x2 + Qwen/Qwen3-8B x2 + Qwen/Qwen3-1.7B + LiquidAI/LFM2.5-1.2B-Instruct
    - **VOTE_THRESHOLD:** 4
-   - **Score:** 
+   - **Score:** 0.73249
    - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 43`
 
 8.
