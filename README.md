@@ -55,14 +55,15 @@ A subsequent academic paper ([arxiv 2401.12994](https://arxiv.org/html/2401.1299
 
 This solution frames span extraction as **constrained text generation**: a small language model reads the note and feature, then outputs a JSON object containing the verbatim span strings. This contrasts with DeBERTa's per-token logit approach.
 
-| Dimension             | Competition baseline              | This solution                                                        |
-| --------------------- | --------------------------------- | -------------------------------------------------------------------- |
-| Model family          | Encoder-only (DeBERTa)            | Decoder-only generative (Qwen3.5, Gemma4)                            |
-| Task framing          | Token classification (BIO labels) | Structured generation (`{"spans": [...]}`)                         |
-| Output representation | Per-token logits over BIO tags    | JSON string decoded from autoregressive generation                   |
-| Ensemble method       | Probability averaging over folds  | Character-level majority voting across 3 models                      |
-| Data augmentation     | DeBERTa pseudo-labeling           | Qwen3-8B few-shot generation with FAISS retrieval                    |
-| Inference constraint  | None (unconstrained softmax)      | Per-note regex FSM (built, applied via vLLM XGrammar when available) |
+| Dimension             | Competition baseline              | This solution                                                                    |
+| --------------------- | --------------------------------- | -------------------------------------------------------------------------------- |
+| Model family          | Encoder-only (DeBERTa)            | Decoder-only generative (Qwen3, LFM2.5, Llama3.1)                               |
+| Task framing          | Token classification (BIO labels) | Structured generation (`{"spans": [...]}`)                                     |
+| Output representation | Per-token logits over BIO tags    | JSON string decoded from autoregressive generation                               |
+| Ensemble method       | Probability averaging over folds  | Character-level majority voting across 4 models (threshold ≥ 3/4)               |
+| Data augmentation     | DeBERTa pseudo-labeling           | Qwen3-8B few-shot generation with FAISS retrieval                                |
+| Inference constraint  | None (unconstrained softmax)      | Per-note regex FSM via vLLM 0.17.1 XGrammar (`StructuredOutputsParams`)         |
+| Inference backend     | N/A                               | vLLM 0.17.1 with native LoRA (`LoRARequest`), tensor parallelism tp=2 for 8B    |
 
 The generative framing handles multiple disjoint spans naturally — the model outputs a list rather than requiring BIO decoding to stitch spans. The tradeoff is slower inference and hallucination risk, mitigated by majority voting and the regex FSM constraint.
 
@@ -74,9 +75,39 @@ The solution runs in three sequential phases:
 
 **Phase 1 — Generate Augmented Data** (`1_generate_augmented_data.ipynb`): Use `Qwen/Qwen3-8B` (fp16, greedy decoding) to pseudo-label 2,000 unannotated patient notes. FAISS-based few-shot retrieval selects 3 annotated examples per (note, feature) pair as in-context demonstrations. Output: `augmented_train.csv` with ~29,600 additional (note, feature, span) triples.
 
-**Phase 2 — Train SLM Ensemble** (`2_train_slm_ensemble.ipynb`): Fine-tune three small language models with QLoRA (4-bit NF4, LoRA rank 16) on the combined labeled + augmented dataset. Models are trained sequentially on a single GPU, each producing a LoRA adapter (~100 MB). Output: `adapters/` containing three adapter checkpoints.
+**Phase 2 — Train SLM Ensemble** (`2_train_slm_ensemble_v2.ipynb`): Fine-tune four small language models with QLoRA (4-bit NF4, LoRA rank 16) on the combined labeled + augmented dataset. Models trained sequentially on a single GPU, each producing a LoRA adapter (~100 MB). Models: `Qwen/Qwen3-1.7B`, `Qwen/Qwen3-8B`, `LiquidAI/LFM2.5-1.2B-Instruct`, `meta-llama/Meta-Llama-3.1-8B-Instruct`. Output: `adapters/` containing four adapter checkpoints.
 
-**Phase 3 — Kaggle Inference** (`3_kaggle_inference.ipynb`): Merge each LoRA adapter into its base model weights in float16, run greedy inference on the test set row-by-row, and combine predictions via character-level majority voting (threshold ≥ 2/3 models). Output: `submission.csv` with semicolon-separated character offsets.
+**Phase 3 — Kaggle Inference** (`3_kaggle_inference_v2.ipynb`): Load each LoRA adapter natively into vLLM 0.17.1 via `LoRARequest` (no disk merge), run batched greedy inference with per-note regex FSM constraints, and combine predictions via character-level majority voting (threshold ≥ 3/4 models). 8B models use tensor parallelism tp=2 across both T4 GPUs. Output: `submission.csv` with semicolon-separated character offsets.
+
+---
+
+## Deprecated Pipeline (V1) — Do Not Use
+
+> **Status: Unsupported.** The V1 notebooks are kept for reference only. Do not run them on Kaggle.
+
+| Notebook | Status |
+| -------- | ------ |
+| `2_train_slm_ensemble.ipynb` | Deprecated — replaced by `2_train_slm_ensemble_v2.ipynb` |
+| `3_kaggle_inference.ipynb` | Deprecated — fails on Kaggle T4 (see below) |
+
+### Why V1 Inference Fails on Kaggle
+
+V1 (`3_kaggle_inference.ipynb`) was designed around vLLM but fell back to a `transformers`-only path (`USE_VLLM=False`) due to two unresolved incompatibilities:
+
+- **vLLM ≤0.19.1**: incorrectly routes Qwen3.5 and Gemma4 (multimodal/hybrid architectures) to its vision-language handler, raising `preprocessor_config.json not found` at runtime.
+- **vLLM ≥0.20.0**: requires CUDA 13. Kaggle T4 environments run CUDA 12.8 — the install fails.
+
+V1 worked around this by using `transformers.generate()` row-by-row with a merge-to-disk strategy. This is significantly slower than V2 and no longer maintained.
+
+**V2 resolution:** `3_kaggle_inference_v2.ipynb` pins `vllm==0.17.1` — the last version that runs on CUDA 12.8 and correctly handles the new model architectures. It uses native LoRA loading (`LoRARequest`), tensor parallelism for 8B models, and per-note structured output constraints that were unavailable in the V1 path.
+
+### V1 Model Registry (reference only)
+
+| Model | Size | Adapter dir |
+| ----- | ---- | ----------- |
+| `Qwen/Qwen3.5-9B` | 9B | `adapters/qwen_35_9b_adapter` |
+| `google/gemma-4-E4B-it` | 4B | `adapters/gemma_4_e4b_adapter` |
+| `Qwen/Qwen3.5-4B` | 4B | `adapters/qwen_35_4b_adapter` |
 
 ---
 
@@ -95,38 +126,43 @@ flowchart TD
         A8 --> A9["augmented_train.csv\n~29600 pairs\ncheckpoint every 100 rows"]
     end
 
-    subgraph Phase2["Phase 2 — Train SLM Ensemble QLoRA"]
+    subgraph Phase2["Phase 2 — Train SLM Ensemble QLoRA (v2)"]
         B1["train.csv + augmented_train.csv"] --> B2["load_and_merge_data\nAUG_SAMPLE_RATIO=1.0"]
         B2 --> B3["make_train_val_datasets\nGroupKFold n_splits=5\nval_fold=4 split by case_num"]
         B3 --> B4["build_assistant_target\njson dumps spans list"]
 
-        B4 --> B5A["Qwen3.5-9B\n4-bit NF4 BF16 QLoRA\nr=16 alpha=32 dropout=0.05\n7 linear target modules"]
-        B4 --> B5B["Gemma-4-E4B-it\n4-bit NF4 BF16 QLoRA\nregex target modules\nlanguage_model layers only"]
-        B4 --> B5C["Qwen3.5-4B\n4-bit NF4 BF16 QLoRA\nr=16 alpha=32 dropout=0.05\n7 linear target modules"]
+        B4 --> B5A["Qwen3-1.7B\n4-bit NF4 BF16 QLoRA\nr=16 alpha=32 dropout=0.05\n7 linear target modules"]
+        B4 --> B5B["Qwen3-8B\n4-bit NF4 BF16 QLoRA\nr=16 alpha=32 dropout=0.05\n7 linear target modules"]
+        B4 --> B5C["LFM2.5-1.2B\n4-bit NF4 BF16 QLoRA\nregex target modules\ntrust_remote_code=True"]
+        B4 --> B5D["Llama-3.1-8B\n4-bit NF4 BF16 QLoRA\nr=16 alpha=32 dropout=0.05\n7 linear target modules"]
 
-        B5A --> B6["SFTTrainer lr=2e-4 cosine\nwarmup=0.05 epochs=3\nbatch=8 grad_accum=2\nmax_len=512 adamw_8bit\nweight_decay=0.01"]
+        B5A --> B6["SFTTrainer lr=2e-4 cosine\nwarmup=0.05 epochs=3\nbatch=8 grad_accum=2\nmax_len=1024 adamw_8bit\nweight_decay=0.01"]
         B5B --> B6
         B5C --> B6
+        B5D --> B6
 
-        B6 --> B7["adapters/qwen_35_9b_adapter"]
-        B6 --> B8["adapters/gemma_4_e4b_adapter"]
-        B6 --> B9["adapters/qwen_35_4b_adapter"]
+        B6 --> B7["adapters/qwen3_1_7b_adapter"]
+        B6 --> B8["adapters/qwen3_8b_adapter"]
+        B6 --> B9["adapters/lfm2_5_1_2b_adapter"]
+        B6 --> B10["adapters/llama3_1_8b_adapter"]
     end
 
-    subgraph Phase3["Phase 3 — Kaggle Inference 2xT4"]
+    subgraph Phase3["Phase 3 — Kaggle Inference 2xT4 (v2 — vLLM 0.17.1)"]
         C1["test.csv"] --> C2["build_chat_prompt\nchat template\nenable_thinking=False\n/no_think suffix"]
 
-        C2 --> C3A["merge_adapter_to_disk\nQwen3.5-9B float16\ndevice_map=auto 2xT4\nmerge_and_unload"]
-        C2 --> C3B["merge_adapter_to_disk\nGemma-4-E4B float16\ndevice_map=auto"]
-        C2 --> C3C["merge_adapter_to_disk\nQwen3.5-4B float16\ndevice_map=auto"]
+        C2 --> C3A["init_engine vLLM 0.17.1\nLlama-3.1-8B tp=2\nnative LoRA LoRARequest\nenforce_eager=True"]
+        C2 --> C3B["init_engine vLLM 0.17.1\nQwen3-8B tp=2\nnative LoRA LoRARequest"]
+        C2 --> C3C["init_engine vLLM 0.17.1\nQwen3-1.7B tp=1\nnative LoRA LoRARequest"]
+        C2 --> C3D["init_engine vLLM 0.17.1\nLFM2.5-1.2B tp=1\nnative LoRA LoRARequest"]
 
-        C3A --> C4["run_inference_transformers\ngreedy do_sample=False\nmax_new_tokens=1024\nrow-by-row"]
+        C3A --> C4["run_inference_vllm\nStructuredOutputsParams regex\ngreedy max_new_tokens=512\nbatched by vLLM"]
         C3B --> C4
         C3C --> C4
+        C3D --> C4
 
         C4 --> C5["_parse_json_output\nstrip think tokens\nregex JSON fallback"]
 
-        C5 --> C6["character_level_majority_vote\nlocate spans exact+fuzzy\nvote_threshold=2 of 3\nchar array sum then threshold\nstrip whitespace boundaries"]
+        C5 --> C6["character_level_majority_vote\nlocate spans exact+fuzzy\nvote_threshold=3 of 4\nchar array sum then threshold\nstrip whitespace boundaries"]
         C6 --> C7["format_location_string\nmerge overlapping spans\nsemicolon-separated offsets"]
         C7 --> C8["submission.csv\nid + location"]
     end
@@ -227,23 +263,24 @@ The checkpoint mechanism writes atomically (write to `.tmp` then `rename()`). In
 
 ---
 
-### Notebook 2: Train SLM Ensemble (`2_train_slm_ensemble.ipynb`)
+### Notebook 2: Train SLM Ensemble (`2_train_slm_ensemble_v2.ipynb`)
 
 #### Objective
 
-Fine-tune three small language models with QLoRA to produce LoRA adapters that extract clinical spans via JSON generation. Training uses both the 9,901 original labeled pairs and the ~29,600 pseudo-labeled pairs from Phase 1 (`AUG_SAMPLE_RATIO=1.0`).
+Fine-tune four small language models with QLoRA to produce LoRA adapters that extract clinical spans via JSON generation. Training uses both the 9,901 original labeled pairs and the ~29,600 pseudo-labeled pairs from Phase 1 (`AUG_SAMPLE_RATIO=1.0`).
 
 #### Architecture & Logic
 
-**Model registry.** Three models are trained sequentially on a single GPU. Each is fully unloaded before the next one loads:
+**Model registry.** Four models are trained sequentially on a single GPU. Each is fully unloaded before the next one loads:
 
-| Model ID                  | Size | Class                           | Adapter dir                      |
-| ------------------------- | ---- | ------------------------------- | -------------------------------- |
-| `Qwen/Qwen3.5-9B`       | 9B   | `AutoModelForCausalLM`        | `adapters/qwen_35_9b_adapter`  |
-| `google/gemma-4-E4B-it` | 4B   | `AutoModelForImageTextToText` | `adapters/gemma_4_e4b_adapter` |
-| `Qwen/Qwen3.5-4B`       | 4B   | `AutoModelForCausalLM`        | `adapters/qwen_35_4b_adapter`  |
+| Model ID                                    | Size | Class                    | Adapter dir                        |
+| ------------------------------------------- | ---- | ------------------------ | ---------------------------------- |
+| `Qwen/Qwen3-1.7B`                          | 1.7B | `AutoModelForCausalLM`  | `adapters/qwen3_1_7b_adapter`     |
+| `Qwen/Qwen3-8B`                            | 8B   | `AutoModelForCausalLM`  | `adapters/qwen3_8b_adapter`       |
+| `LiquidAI/LFM2.5-1.2B-Instruct`           | 1.2B | `AutoModelForCausalLM`  | `adapters/lfm2_5_1_2b_adapter`    |
+| `meta-llama/Meta-Llama-3.1-8B-Instruct`   | 8B   | `AutoModelForCausalLM`  | `adapters/llama3_1_8b_adapter`    |
 
-Gemma 4 uses `AutoModelForImageTextToText` because its architecture includes a vision tower. Only language model layers are trained — LoRA target modules are specified as the regex `model\.language_model\..*\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)` rather than a list, to avoid touching `Gemma4ClippableLinear` layers which PEFT does not support.
+LFM2.5 requires `trust_remote_code=True` (custom architecture). Its LoRA target modules are specified as a regex rather than a list to match the correct linear layers. All other models use the standard 7-module list (`q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj`).
 
 **QLoRA quantization.** All three models are loaded in 4-bit NF4 with bfloat16 compute dtype:
 
@@ -278,7 +315,7 @@ BitsAndBytesConfig(
 | `num_train_epochs`            | 3                         |
 | `per_device_train_batch_size` | 8                         |
 | `gradient_accumulation_steps` | 2 → effective batch = 16 |
-| `max_seq_length`              | 512 tokens                |
+| `max_seq_length`              | 1024 tokens               |
 | `lr_scheduler_type`           | cosine                    |
 | `warmup_ratio`                | 0.05                      |
 | `weight_decay`                | 0.01                      |
@@ -307,54 +344,46 @@ main()
 │   └── build assistant_target: json.dumps({"spans": annotation_list})
 ├── make_train_val_datasets()
 │   └── GroupKFold(n_splits=5), VAL_FOLD=4, groups=case_num
-└── for each model_spec in MODEL_REGISTRY (sequential):
+└── for each model_spec in MODEL_REGISTRY (sequential, 4 models):
     └── train_one_model()
         ├── skip if adapters/*/adapter_config.json already exists
-        ├── build_bnb_config()                   # 4-bit NF4 BF16 double-quant
-        ├── load_model_and_tokenizer()            # device_map={"": "cuda:0"}, attn="eager"
-        ├── apply_lora()                          # prepare_model_for_kbit_training + get_peft_model
-        ├── make_formatting_func()                # chat template with enable_thinking=False for Qwen
-        ├── build_sft_config()                    # SFTConfig with all hyperparams
-        ├── SFTTrainer(model, tokenizer, args, train_dataset, val_dataset, formatting_func)
+        ├── build_bnb_config()                        # 4-bit NF4 BF16 double-quant
+        ├── load_model_and_tokenizer()                # device_map={"": "cuda:0"}, attn="eager"
+        │   └── trust_remote_code=True for LFM2.5
+        ├── apply_lora()                              # prepare_model_for_kbit_training + get_peft_model
+        │   └── regex target_modules for LFM2.5; list for all others
+        ├── make_formatting_func()                    # chat template with enable_thinking=False for Qwen
+        ├── build_sft_config()                        # SFTConfig, max_seq_length=1024
+        ├── SFTTrainer + SafeEvalGenerationCallback + ResourceAndStabilityCallback
         ├── trainer.train()
-        ├── model.save_pretrained(adapter_dir)    # LoRA weights only ~100 MB
+        ├── model.save_pretrained(adapter_dir)        # LoRA weights only ~100 MB
         ├── tokenizer.save_pretrained(adapter_dir)
         └── del trainer, model, tokenizer; gc + empty_cache
 ```
 
 ---
 
-### Notebook 3: Kaggle Inference (`3_kaggle_inference.ipynb`)
+### Notebook 3: Kaggle Inference (`3_kaggle_inference_v2.ipynb`)
 
 #### Objective
 
-Run on Kaggle's 2×T4 hardware (29.2 GB total VRAM, CUDA 12.8, Compute Capability 7.5 — no native bfloat16). For each model: merge the LoRA adapter into base weights, run greedy inference on all test rows, collect span predictions. Combine the three models' predictions via character-level majority voting to produce the final submission.
+Run on Kaggle's 2×T4 hardware (29.2 GB total VRAM, CUDA 12.8, Compute Capability 7.5 — no native bfloat16). For each model: load the LoRA adapter natively into vLLM 0.17.1 via `LoRARequest` (no merge to disk), run batched greedy inference with per-note regex FSM constraints, collect span predictions. Combine the four models' predictions via character-level majority voting to produce the final submission.
 
 #### Architecture & Logic
 
-**Hardware constraints.** T4 GPUs are CC=7.5, which has no native bfloat16 tensor cores. All inference uses `torch.float16`. The 9B model in float16 requires ~18 GB; both T4s together provide 29.2 GB, so `device_map="auto"` can spread the 9B model across both GPUs without quantization.
+**Hardware constraints.** T4 GPUs are CC=7.5, which has no native bfloat16 tensor cores. All inference uses `float16`. Both T4s together provide 29.2 GB; 8B models use `tensor_parallel_size=2` to spread across both GPUs, while 1–2B models use `tensor_parallel_size=1`.
 
-**Why not vLLM.** `USE_VLLM=False`. vLLM ≤0.19.1 incorrectly routes Qwen3.5 and Gemma4 (which have multimodal or hybrid architectures) to its vision-language handler, failing with `preprocessor_config.json` errors. vLLM 0.20.0+ requires CUDA 13, which the T4 environment (CUDA 12.8) does not provide. The transformers `generate()` path works on all three models.
+**vLLM 0.17.1.** V2 uses vLLM 0.17.1, pinned as the last version that runs on CUDA 12.8. Key settings:
+- `enable_lora=True` with `max_lora_rank=16` — adapters loaded at runtime via `LoRARequest`, eliminating the merge-to-disk step
+- `enforce_eager=True` — required for clean VRAM release between models and T4 CC=7.5 compatibility
+- `AttentionConfig(backend=AttentionBackendEnum.TRITON_ATTN)` — Triton attention for T4 (SDPA incompatible with vLLM's paged KV cache)
+- `gpu_memory_utilization=0.85` — safe headroom on 14.6 GB T4s
 
-**LoRA merge strategy.** For each model:
+**Per-note regex FSM constraint.** Each test row gets its own `StructuredOutputsParams` with a regex built from the note's character set. The regex enforces both structural validity (`{"spans": [...]}`) and lexical containment (span strings can only contain characters present in the source note). vLLM's XGrammar backend compiles this into an FSM and masks logits at each step — the decoder physically cannot hallucinate characters absent from the note.
 
-1. Load the base model in float16 with `device_map="auto"` (spreads across both T4 GPUs)
-2. `PeftModel.from_pretrained(base_model, adapter_path)` loads the LoRA weights
-3. `merge_and_unload()` folds adapter weights into base weights and returns a plain model
-4. Save merged weights to `/kaggle/working/merged_models/merged_{name}/` (safe_serialization=True)
-5. Load the merged model for inference, then `shutil.rmtree()` the merged checkpoint to reclaim disk
+**Adapter loading.** No merge to disk. Each engine is initialized once with `enable_lora=True`, then inference is called with a `LoRARequest(lora_name, lora_int_id, adapter_path)`. This saves ~2–5 minutes of merge+save+reload per model compared to V1's merge-to-disk approach.
 
-Why not use 4-bit for the merge? `merge_and_unload()` on a quantized model retains the `quantization_method` attribute, which blocks subsequent `.to(dtype)` casts. Dequantization on T4 produces bfloat16, which then errors on CC=7.5. Float16 merge bypasses both issues cleanly.
-
-**Qwen3.5 config patch.** Some Qwen3.5 checkpoints (Unsloth-style) wrap the config as `{"model_type": "qwen3_5", "text_config": {...}}`. Transformers <5.5.0 does not recognize `qwen3_5`. The patch (`_patch_qwen35_config`):
-
-1. Detects if `"qwen3_5" in CONFIG_MAPPING` — if yes (transformers 5.5.0+), no patch needed
-2. Extracts `text_config` and renames `model_type` to `"qwen3"` (recognized in 5.0.0)
-3. Creates a symlinked shadow directory under `/kaggle/working/` (since `/kaggle/input` is read-only), symlinks all weight files, and writes the patched `config.json`
-
-**Per-note regex FSM constraint** (vLLM path, currently inactive). When vLLM is available, each test row gets a per-note `SamplingParams` with a regex built from the note's character set. The regex enforces both structural validity (`{"spans": [...]}`) and lexical containment (span strings can only contain characters from the source note). vLLM's XGrammar backend compiles this into an FSM and masks logits at each generation step — the decoder physically cannot hallucinate characters not in the note.
-
-**Inference.** Row-by-row greedy generation with `do_sample=False`, `max_new_tokens=1024`, `pad_token_id=tokenizer.eos_token_id`. The prompt matches the Phase 2 training format exactly: same system prompt, same user message structure, plus a `/no_think` suffix in the user message and `enable_thinking=False` in the template call.
+**Inference.** Batched greedy generation via `llm.generate(prompts, sampling_params, lora_request)`. `do_sample=False`, `max_new_tokens=512`, temperature=0.0. Each row's `sampling_params` carries its own per-note regex constraint. The prompt matches Phase 2 training format: same system prompt, same user message structure, `/no_think` suffix, `enable_thinking=False`.
 
 **Output parsing.** `_parse_json_output()`:
 
@@ -366,12 +395,12 @@ Why not use 4-bit for the merge? `merge_and_unload()` on a quantized model retai
 
 1. For each model's predicted span strings, locate them in `pn_history` via: exact match → case-insensitive match → `rapidfuzz.partial_ratio_alignment` (score cutoff 70)
 2. Map located `(start, end)` pairs to a binary `uint8` array of length `len(pn_history)`
-3. Sum the three binary arrays → vote count array (integer values 0–3)
-4. Threshold at `VOTE_THRESHOLD=2`: positions with ≥ 2 votes become 1 in the consensus array
+3. Sum the four binary arrays → vote count array (integer values 0–4)
+4. Threshold at `VOTE_THRESHOLD=3`: positions with ≥ 3 votes become 1 in the consensus array
 5. Zero out whitespace characters (`' ', '\t', '\n', '\r'`) at span edges (start or end of contiguous runs) to prevent spans from beginning or ending on whitespace
 6. Extract contiguous runs of 1s as final `(start, end)` span tuples
 
-Character-level voting is more robust than span-level voting: if two models predict `"substernal pressure"` and one predicts `"substernal chest pressure"`, the character overlap region still reaches the threshold vote count and is retained, rather than being discarded as a non-matching span.
+Character-level voting is more robust than span-level voting: if models predict `"substernal pressure"` vs `"substernal chest pressure"`, the character overlap region still reaches the threshold and is retained.
 
 **Submission formatting.** `format_location_string()`:
 
@@ -387,30 +416,26 @@ Character-level voting is more robust than span-level voting: if two models pred
 main()
 ├── load test.csv, patient_notes.csv, features.csv
 │   └── build pn_map and feat_map lookup dicts
-├── for each model_spec in MODEL_REGISTRY (sequential):
-│   ├── merge_adapter_to_disk()
-│   │   ├── _find_model_root()               # find config.json within model dir
-│   │   ├── _patch_qwen35_config()           # transformers<5.5.0 compat for Qwen3.5
-│   │   ├── load base model float16 device_map=auto
-│   │   ├── PeftModel.from_pretrained(adapter_path)
-│   │   ├── merge_and_unload()
-│   │   └── save to /kaggle/working/merged_models/merged_{name}/
-│   ├── AutoTokenizer.from_pretrained(merged_path)
-│   ├── run_inference_transformers()
-│   │   ├── load merged model float16 device_map=auto
-│   │   ├── model.eval()
+├── for each model_spec in MODEL_REGISTRY (sequential, 4 models):
+│   ├── AutoTokenizer.from_pretrained(model_path)
+│   ├── init_engine()
+│   │   └── LLM(model, dtype="half", tensor_parallel_size=tp,
+│   │           gpu_memory_utilization=0.85, enforce_eager=True,
+│   │           enable_lora=True, max_lora_rank=16,
+│   │           attention_config=TRITON_ATTN)
+│   ├── run_inference_vllm()
 │   │   ├── for each test row:
-│   │   │   ├── build_chat_prompt()          # enable_thinking=False, /no_think suffix
-│   │   │   ├── tokenizer(prompt, return_tensors="pt")
-│   │   │   ├── model.generate(do_sample=False, max_new_tokens=1024)
-│   │   │   └── _parse_json_output()
-│   │   └── del model; gc + empty_cache
+│   │   │   ├── build_chat_prompt()              # enable_thinking=False, /no_think suffix
+│   │   │   ├── build_constraint_regex()         # per-note char-class regex
+│   │   │   └── SamplingParams(StructuredOutputsParams(regex=...))
+│   │   ├── llm.generate(prompts, sampling_params, LoRARequest(adapter_path))
+│   │   └── _parse_json_output() per output
 │   ├── store model_spans in all_model_predictions
-│   └── shutil.rmtree(merged_path)           # reclaim disk between models
-├── character_level_majority_vote(all_model_predictions, vote_threshold=2, fuzzy_cutoff=70)
+│   └── destroy_engine()                         # destroy_model_parallel + gc + cuda.empty_cache
+├── character_level_majority_vote(all_model_predictions, vote_threshold=3, fuzzy_cutoff=70)
 │   ├── locate_span_in_note() per model per row (exact → case-insensitive → partial_ratio_alignment)
-│   ├── spans_to_char_array() → sum across 3 models
-│   ├── threshold at 2 → consensus uint8 array
+│   ├── spans_to_char_array() → sum across 4 models
+│   ├── threshold at 3 → consensus uint8 array
 │   ├── zero whitespace at span edges
 │   └── char_array_to_spans() → (start, end) list
 ├── build_submission()
@@ -420,16 +445,18 @@ main()
 
 **Key CONFIG values (inference):**
 
-| Parameter                   | Value                                          |
-| --------------------------- | ---------------------------------------------- |
-| `USE_VLLM`                | `False`                                      |
-| `VOTE_THRESHOLD`          | 2 (out of 3)                                   |
-| `MAX_NEW_TOKENS`          | 1024                                           |
-| `LLM_TEMPERATURE`         | 0.0 (greedy)                                   |
-| `FUZZY_SCORE_CUTOFF`      | 70.0                                           |
-| `LARGE_MODEL_THRESHOLD_B` | 3B (all models at/above use float16 GPU merge) |
-| `dtype`                   | `torch.float16` (T4, CC=7.5)                 |
-| `MAX_SPANS_PER_FEATURE`   | 10                                             |
+| Parameter               | Value                                                 |
+| ----------------------- | ----------------------------------------------------- |
+| `USE_VLLM`            | `True` (vLLM 0.17.1)                               |
+| `VOTE_THRESHOLD`      | 3 (out of 4)                                          |
+| `MAX_NEW_TOKENS`      | 512                                                   |
+| `LLM_TEMPERATURE`     | 0.0 (greedy)                                          |
+| `FUZZY_SCORE_CUTOFF`  | 70.0                                                  |
+| `GPU_MEM_UTIL`        | 0.85                                                  |
+| `dtype`               | `float16` (T4, CC=7.5)                              |
+| `MAX_SPANS_PER_FEATURE` | 10                                                  |
+| `tp_8b`               | 2 (Qwen3-8B, Llama-3.1-8B span both T4 GPUs)         |
+| `tp_small`            | 1 (Qwen3-1.7B, LFM2.5-1.2B — single GPU)             |
 
 ---
 
@@ -441,14 +468,15 @@ main()
 
 jupyter nbconvert --to notebook --execute 1_generate_augmented_data.ipynb
 
-# Phase 2 — train ensemble
+# Phase 2 — train ensemble (V2: 4 models)
 # Requires: augmented_train.csv from Phase 1
 export HF_TOKEN=hf_...
-jupyter nbconvert --to notebook --execute 2_train_slm_ensemble.ipynb
+jupyter nbconvert --to notebook --execute 2_train_slm_ensemble_v2.ipynb
 
-# Phase 3 — Kaggle inference
+# Phase 3 — Kaggle inference (V2: vLLM 0.17.1)
 # Run inside a Kaggle notebook with T4x2 hardware, internet OFF
 # Upload adapters/ as a private Kaggle dataset before running
+# Use 3_kaggle_inference_v2.ipynb — NOT the deprecated 3_kaggle_inference.ipynb
 ```
 
 **File dependencies between phases:**
@@ -458,12 +486,14 @@ Phase 1 output: augmented_train.csv
                 faiss_features.index (cache, optional)
                 faiss_metadata.parquet (cache, optional)
 
-Phase 2 output: adapters/qwen_35_9b_adapter/adapter_config.json
-                adapters/qwen_35_9b_adapter/adapter_model.safetensors
-                adapters/gemma_4_e4b_adapter/adapter_config.json
-                adapters/gemma_4_e4b_adapter/adapter_model.safetensors
-                adapters/qwen_35_4b_adapter/adapter_config.json
-                adapters/qwen_35_4b_adapter/adapter_model.safetensors
+Phase 2 output: adapters/qwen3_1_7b_adapter/adapter_config.json
+                adapters/qwen3_1_7b_adapter/adapter_model.safetensors
+                adapters/qwen3_8b_adapter/adapter_config.json
+                adapters/qwen3_8b_adapter/adapter_model.safetensors
+                adapters/lfm2_5_1_2b_adapter/adapter_config.json
+                adapters/lfm2_5_1_2b_adapter/adapter_model.safetensors
+                adapters/llama3_1_8b_adapter/adapter_config.json
+                adapters/llama3_1_8b_adapter/adapter_model.safetensors
 
 Phase 3 output: /kaggle/working/submission.csv
 ```
