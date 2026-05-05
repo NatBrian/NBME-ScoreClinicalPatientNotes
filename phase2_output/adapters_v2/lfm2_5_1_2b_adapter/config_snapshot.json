@@ -1,0 +1,40 @@
+{
+  "timestamp": "2026-05-05T05:24:55.341754",
+  "training_args": {
+    "num_train_epochs": 3,
+    "learning_rate": 0.0001,
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "lora_dropout": 0.1,
+    "per_device_batch_size": 8,
+    "gradient_accumulation": 2,
+    "max_seq_length": 1024,
+    "lr_scheduler": "cosine",
+    "warmup_ratio": 0.05
+  },
+  "model_spec": {
+    "name": "lfm2_5_1_2b",
+    "model_id": "LiquidAI/LFM2.5-1.2B-Instruct",
+    "model_class": "causal_lm",
+    "compute_dtype": "torch.bfloat16",
+    "fp16": false,
+    "bf16": true,
+    "adapter_dir": "/root/dataDisk/liangsheng/Brian/adapters/lfm2_5_1_2b_adapter",
+    "enable_thinking": null,
+    "trust_remote_code": true,
+    "lora_target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "out_proj",
+      "in_proj"
+    ]
+  },
+  "dataset_config": {
+    "train_samples": 22708,
+    "val_samples": 6391,
+    "aug_sample_ratio": 0.5,
+    "n_folds": 5,
+    "val_fold": 4
+  }
+}
