@@ -1,15 +1,16 @@
 # Results
 
-| Model / Combination                                            | Pretrained Only + Few Shot |      LoRA Adapter | LoRA Adapter v2 | Full Fine Tuning |
-| -------------------------------------------------------------- | -------------------------: | ----------------: | --------------: | ------------------: |
-| Qwen3-1.7B                                                     |               0.48093 (V5) |     0.60103 (V16) |   0.64721 (V25) |   0.11256 (V4) |
-| Qwen3-8B                                                       |               0.49500 (V3) |     0.66226 (V10) |   0.66552 (V24) |   0.50343 (V5) |
-| Llama-3.1-8B                                                   |                          - |     0.64465 (V11) |   0.66515 (V23) |                          - |
-| LFM2.5-1.2B                                                    |                          - |     0.43482 (V17) |   0.62867 (V26) |   0.49203 (V3) |
-| Qwen3-1.7B + Qwen3-8B + LFM2.5-1.2B                            |               0.53125 (V6) |  0.67778 (V6 SP2) |   0.67900 (V22) |   0.62569 (V2) |
-| Qwen3-8B + Llama-3.1-8B + Qwen3-1.7B + LFM2.5-1.2B             |                          - |     0.70143 (V15) |   0.69971 (V21) |                          - |
-| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       |                          - | **0.70180 (V14)** |   0.69419 (V29) |                          - |
-| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B x2 + LFM2.5-1.2B x2 |                          - |     0.70160 (V18) |   0.69909 (V27) |                          - |
+| Model / Combination                                            | Pretrained Only + Few Shot | LoRA Adapter       | LoRA Adapter v2   | With LoRA Adapter v2 (FIXED) | Full Fine Tuning |
+| -------------------------------------------------------------- | --------------------------: | ------------------: | ----------------: | ----------------------------: | ----------------: |
+| Qwen3-1.7B                                                     | 0.48093 (V5)               | 0.60103 (V16)      | 0.64721 (V25)     | 0.65140 (V41)                 | 0.11256 (V4)      |
+| Qwen3-8B                                                       | 0.49500 (V3)               | 0.66226 (V10)      | 0.66552 (V24)     | 0.71670 (V40)                 | 0.50343 (V5)      |
+| Llama-3.1-8B                                                   | -                          | 0.64465 (V11)      | 0.66515 (V23)     | 0.68951 (V39)                 | -                 |
+| LFM2.5-1.2B                                                    | -                          | 0.43482 (V17)      | 0.62867 (V26)     | 0.63392 (V42)                 | 0.49203 (V3)      |
+| Qwen3-1.7B + Qwen3-8B + LFM2.5-1.2B                            | 0.53125 (V6)               | 0.67778 (V6 SP2)   | 0.67900 (V22)     | 0.71046 (V38)                 | 0.62569 (V2)      |
+| Qwen3-8B + Llama-3.1-8B + Qwen3-1.7B + LFM2.5-1.2B             | -                          | 0.70143 (V15)      | 0.69971 (V21)     | 0.73195 (V37)                 | -                 |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       | -                          | **0.70180 (V14)**  | 0.69419 (V29)     | 0.7X (temp)                            | -                 |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B x2 + LFM2.5-1.2B x2 | -                          | 0.70160 (V18)      | 0.69909 (V27)     | 0.7X (temp)                            | -                 |
+| Llama-3.1-8B + Qwen/Qwen3-8B + Mistral-7B                      | 0.53762 (V2)               | -                  | -                 | -                            | -                 |
 
 ## Pretrained Only Model with Few Shot
 
@@ -253,6 +254,56 @@ SYSTEM_PROMPT = (
    - **VOTE_THRESHOLD:** 4
    - **Score:** 0.69419
    - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 29`
+
+
+## With LoRA Adapter v2 (FIXED)
+1.
+   - **Models:** Qwen/Qwen3-8B + Qwen/Qwen3-1.7B + LiquidAI/LFM2.5-1.2B-Instruct
+   - **VOTE_THRESHOLD:** 2
+   - **Score:** 0.71046
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 38`
+
+2.
+   - **Models:** meta-llama/Llama-3.1-8B-Instruct + Qwen/Qwen3-8B + Qwen/Qwen3-1.7B + LiquidAI/LFM2.5-1.2B-Instruct
+   - **VOTE_THRESHOLD:** 3
+   - **Score:** 0.73195
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 37`
+
+3.
+   - **Models:** meta-llama/Llama-3.1-8B-Instruct
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.68951
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 39`
+
+4.
+   - **Models:** Qwen/Qwen3-8B
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.71670
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 40`
+
+5.
+   - **Models:** Qwen/Qwen3-1.7B
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.65140
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 41`
+
+6.
+   - **Models:** LiquidAI/LFM2.5-1.2B-Instruct
+   - **VOTE_THRESHOLD:** 1
+   - **Score:** 0.63392
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 42`
+
+7.
+   - **Models:** meta-llama/Llama-3.1-8B-Instruct x2 + Qwen/Qwen3-8B x2 + Qwen/Qwen3-1.7B + LiquidAI/LFM2.5-1.2B-Instruct
+   - **VOTE_THRESHOLD:** 4
+   - **Score:** 
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 43`
+
+8.
+   - **Models:** meta-llama/Llama-3.1-8B-Instruct x2 + Qwen/Qwen3-8B x2 + Qwen/Qwen3-1.7B x2 + LiquidAI/LFM2.5-1.2B-Instruct x2
+   - **VOTE_THRESHOLD:** 5
+   - **Score:**
+   - **Submission:** `3_kaggle_inference-nbme-score-clinical-v2 - Version 44`
 
 
 ## Full Fine Tuning
