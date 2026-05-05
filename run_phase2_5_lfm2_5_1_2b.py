@@ -73,18 +73,21 @@ CONFIG = {
     "VAL_FOLD":              4,
     "PER_DEVICE_BATCH_SIZE": 8,
     "GRADIENT_ACCUMULATION": 2,       # effective batch = 8 × 2 = 16
-    "LEARNING_RATE":         2e-5,    # 10× lower than QLoRA (2e-4)
+    "LEARNING_RATE":         2e-4,    # FIXED: 10× increase (same as QLoRA)
     "NUM_TRAIN_EPOCHS":      3,
     "MAX_SEQ_LENGTH":        1024,    # data p99=449 tok, max=524
     "WARMUP_RATIO":          0.05,
     "LR_SCHEDULER":          "cosine",
-    "WEIGHT_DECAY":          0.01,
+    "WEIGHT_DECAY":          0.1,      # FIXED: 10× increase for regularization
     "LOGGING_STEPS":         50,
     "SAVE_STEPS":            500,
     "EVAL_STEPS":            500,
     "EVAL_STRATEGY":         "steps",
     "SAVE_TOTAL_LIMIT":      1,
     "MAX_STEPS":             -1,
+    "LOAD_BEST_MODEL_AT_END": True,    # FIXED: Enable early stopping
+    "METRIC_FOR_BEST_MODEL": "eval_loss",  # FIXED: Monitor eval loss
+    "GREATER_IS_BETTER": False,           # FIXED: Lower eval_loss = better
 }
 
 SYSTEM_PROMPT = (
@@ -266,20 +269,23 @@ def build_sft_config(cfg: dict) -> SFTConfig:
         per_device_train_batch_size  = cfg["PER_DEVICE_BATCH_SIZE"],
         per_device_eval_batch_size   = cfg["PER_DEVICE_BATCH_SIZE"],
         gradient_accumulation_steps  = cfg["GRADIENT_ACCUMULATION"],
-        gradient_checkpointing       = False,   # 1.2B in bf16 ≈ 10 GB — no need
+        gradient_checkpointing       = True,    # FIXED: Enable for 1.2B model
         learning_rate                = cfg["LEARNING_RATE"],
         weight_decay                 = cfg["WEIGHT_DECAY"],
         warmup_ratio                 = cfg["WARMUP_RATIO"],
         lr_scheduler_type            = cfg["LR_SCHEDULER"],
-        optim                        = "adamw_torch",
+        optim                        = "adamw_torch_fused",  # FIXED: Add _fused for stability
         bf16                         = True,
         fp16                         = False,
+        max_grad_norm                 = 1.0,    # FIXED: Gradient clipping
         eval_strategy                = cfg["EVAL_STRATEGY"],
         eval_steps                   = cfg["EVAL_STEPS"],
         save_strategy                = "steps",
         save_steps                   = cfg["SAVE_STEPS"],
         save_total_limit             = cfg["SAVE_TOTAL_LIMIT"],
-        load_best_model_at_end       = False,
+        load_best_model_at_end       = True,  # FIXED: Enable early stopping
+        metric_for_best_model        = "eval_loss",  # FIXED: Monitor eval loss
+        greater_is_better             = False,  # FIXED: Lower eval_loss = better
         logging_steps                = cfg["LOGGING_STEPS"],
         logging_dir                  = str(cfg["OUTPUT_DIR"] / "logs"),
         report_to                    = "none",
