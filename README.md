@@ -67,6 +67,19 @@ This solution frames span extraction as **constrained text generation**: a small
 
 The generative framing handles multiple disjoint spans naturally — the model outputs a list rather than requiring BIO decoding to stitch spans. The tradeoff is slower inference and hallucination risk, mitigated by majority voting and the regex FSM constraint.
 
+## Results
+
+| Model / Combination                                            | Pretrained Only + Few Shot | LoRA Adapter v2 |
+| -------------------------------------------------------------- | -------------------------: | --------------: |
+| Qwen3-1.7B                                                     |               0.48093 |   0.64721 |
+| Qwen3-8B                                                       |               0.49500 |   0.66552 |
+| Llama-3.1-8B                                                   |                          - |   0.66515 |
+| LFM2.5-1.2B / LFM2.5                                           |                          - |   0.62867 |
+| Qwen3-1.7B + Qwen3-8B + LFM2.5-1.2B                            |               0.53125 |   0.67900 |
+| Qwen3-8B + Llama-3.1-8B + Qwen3-1.7B + LFM2.5-1.2B             |                          - |   0.69971 |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B + LFM2.5-1.2B       |                          - |   0.69419 |
+| Qwen3-8B x2 + Llama-3.1-8B x2 + Qwen3-1.7B x2 + LFM2.5-1.2B x2 |                          - |   0.69909 |
+
 ---
 
 ## Methodology & Pipeline Overview
