@@ -121,6 +121,7 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     DataCollatorForSeq2Seq,
+    EarlyStoppingCallback,
     Trainer,
     TrainingArguments,
     set_seed,
@@ -152,28 +153,27 @@ CONFIG = {
     "ADAPTER_ROOT":          Path("./adapters"),
     "AUG_CSV":               Path("./augmented_train.csv"),
     "SEED":                  42,
-    "AUG_SAMPLE_RATIO":      1.0,
+    "AUG_SAMPLE_RATIO":      0.5,   # reduced from 1.0 — ablate distribution shift
     "N_FOLDS":               5,
     "VAL_FOLD":              4,
-    "LORA_R":                16,
-    "LORA_ALPHA":            32,
-    "LORA_DROPOUT":          0.05,
-    "LORA_TARGET_MODULES":   ["q_proj", "k_proj", "v_proj", "o_proj",
-                              "gate_proj", "up_proj", "down_proj"],
+    "LORA_R":                8,     # reduced from 16 — less capacity → less memorization
+    "LORA_ALPHA":            16,    # keep alpha/r = 2.0
+    "LORA_DROPOUT":          0.1,   # increased from 0.05 — stronger adapter regularization
+    "LORA_TARGET_MODULES":   ["q_proj", "k_proj", "v_proj", "o_proj"],  # attention-only
     "VAL_GENERATION_N":      128,
     "PER_DEVICE_BATCH_SIZE": 8,       # reduce to 4 if OOM
     "GRADIENT_ACCUMULATION": 2,       # effective batch = 8×2 = 16
-    "LEARNING_RATE":         2e-4,
+    "LEARNING_RATE":         1e-4,  # reduced from 2e-4 — slower memorization
     "NUM_TRAIN_EPOCHS":      3,
     "MAX_SEQ_LENGTH":        1024,
     "WARMUP_RATIO":          0.05,
     "LR_SCHEDULER":          "cosine",
-    "WEIGHT_DECAY":          0.01,
+    "WEIGHT_DECAY":          0.05,  # increased from 0.01 — stronger L2 pressure
     "LOGGING_STEPS":         50,
     "SAVE_STEPS":            500,
     "EVAL_STEPS":            500,
     "EVAL_STRATEGY":         "steps",
-    "SAVE_TOTAL_LIMIT":      1,
+    "SAVE_TOTAL_LIMIT":      2,     # keep best + latest
     "MAX_STEPS":             -1,
 }
 
@@ -188,8 +188,7 @@ MODEL_REGISTRY = [
         "adapter_dir":       Path("./adapters/llama3_1_8b_adapter"),
         "enable_thinking":   False,
         "trust_remote_code": False,
-        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
-                                "gate_proj", "up_proj", "down_proj"],
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
     },
     {
         "name":              "qwen3_1_7b",
@@ -201,8 +200,7 @@ MODEL_REGISTRY = [
         "adapter_dir":       Path("./adapters/qwen3_1_7b_adapter"),
         "enable_thinking":   False,
         "trust_remote_code": False,
-        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
-                                "gate_proj", "up_proj", "down_proj"],
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
     },
     {
         "name":              "qwen3_8b",
@@ -214,8 +212,7 @@ MODEL_REGISTRY = [
         "adapter_dir":       Path("./adapters/qwen3_8b_adapter"),
         "enable_thinking":   False,
         "trust_remote_code": False,
-        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj",
-                                "gate_proj", "up_proj", "down_proj"],
+        "lora_target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
     },
     {
         "name":              "lfm2_5_1_2b",
@@ -543,7 +540,9 @@ def build_training_args(model_spec: dict, adapter_dir: Path, cfg: dict) -> Train
         save_strategy                = "steps",
         save_steps                   = cfg["SAVE_STEPS"],
         save_total_limit             = cfg["SAVE_TOTAL_LIMIT"],
-        load_best_model_at_end       = False,
+        load_best_model_at_end       = True,
+        metric_for_best_model        = "eval_loss",
+        greater_is_better            = False,
         logging_steps                = cfg["LOGGING_STEPS"],
         logging_dir                  = str(adapter_dir / "logs"),
         report_to                    = ["tensorboard"],
@@ -687,6 +686,7 @@ def train_one_model(model_spec: dict, train_dataset: Dataset,
             val_dataset, tokenizer, model_spec, cfg, max_eval_samples=cfg.get("VAL_GENERATION_N", 64)
         ))
         trainer.add_callback(ResourceAndStabilityCallback())
+        trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=3))
 
         import datetime as dt
         config_snapshot = {
@@ -762,17 +762,18 @@ def main():
     log.info(f"CUDA_VISIBLE_DEVICES = {GPU_INDEX}")
     log.info(f"CPU threads: OMP/MKL/OpenBLAS = {N_THREADS}, torch intra=8 inter=4")
 
+    first_gpu = GPU_INDEX.split(",")[0]
     result = subprocess.run(
         ["nvidia-smi", "--query-gpu=index,memory.used,memory.free",
-         "--format=csv,noheader", f"--id={GPU_INDEX}"],
+         "--format=csv,noheader", f"--id={first_gpu}"],
         capture_output=True, text=True,
     )
     idx, used, free = result.stdout.strip().split(", ")
     used_mib = int(used.replace(" MiB", ""))
     if used_mib > 1000:
-        log.warning(f"GPU {GPU_INDEX} already has {used} used — consider switching GPU_INDEX")
+        log.warning(f"GPU {first_gpu} already has {used} used — consider switching GPU_INDEX")
     else:
-        log.info(f"GPU {GPU_INDEX}: {used} used / {free} free — OK")
+        log.info(f"GPU {first_gpu}: {used} used / {free} free — OK")
 
     hf_token = os.environ.get("HF_TOKEN")
     if hf_token:
@@ -827,15 +828,39 @@ def main():
 
     cfg["ADAPTER_ROOT"].mkdir(parents=True, exist_ok=True)
 
+    hf_token_available = bool(os.environ.get("HF_TOKEN"))
+
+    # ── Optional model filter — e.g. MODEL_NAMES="qwen3_1_7b,lfm2_5_1_2b" ──
+    model_names_filter = os.environ.get("MODEL_NAMES", "")
+    active_models = MODEL_REGISTRY
+    if model_names_filter:
+        allowed = {n.strip() for n in model_names_filter.split(",")}
+        active_models = [m for m in MODEL_REGISTRY if m["name"] in allowed]
+        log.info(f"MODEL_NAMES filter: training only {[m['name'] for m in active_models]}")
+
     # ── Train sequentially ────────────────────────────────────────────────────
-    log.info(f"▶ Step 3/3 — Training {len(MODEL_REGISTRY)} models sequentially ...")
-    for i, model_spec in enumerate(MODEL_REGISTRY):
+    log.info(f"▶ Step 3/3 — Training {len(active_models)} models sequentially ...")
+    failed_models = []
+    for i, model_spec in enumerate(active_models):
         model_spec["adapter_dir"] = Path(model_spec["adapter_dir"]).resolve()
-        log.info(f"\n  Model {i+1}/{len(MODEL_REGISTRY)}: {model_spec['name']}")
-        train_one_model(model_spec, train_dataset, val_dataset, cfg)
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        model_name = model_spec["name"]
+        log.info(f"\n  Model {i+1}/{len(MODEL_REGISTRY)}: {model_name}")
+
+        # Skip gated models when no HF_TOKEN is available
+        if not hf_token_available and "llama" in model_name.lower():
+            log.warning(f"[{model_name}] Skipping — gated model requires HF_TOKEN")
+            failed_models.append((model_name, "HF_TOKEN not set"))
+            continue
+
+        try:
+            train_one_model(model_spec, train_dataset, val_dataset, cfg)
+        except Exception as exc:
+            log.error(f"[{model_name}] Training FAILED: {exc}", exc_info=True)
+            failed_models.append((model_name, str(exc)))
+        finally:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # ── Summary ───────────────────────────────────────────────────────────────
     log.info("\n" + "="*65)
@@ -843,6 +868,10 @@ def main():
     for m in MODEL_REGISTRY:
         exists = (Path(m["adapter_dir"]) / "adapter_config.json").exists()
         log.info(f"    {'✓' if exists else '✗'} {m['name']:25s} → {m['adapter_dir']}")
+    if failed_models:
+        log.warning(f"  Failed models ({len(failed_models)}):")
+        for name, reason in failed_models:
+            log.warning(f"    ✗ {name}: {reason}")
     log.info("="*65)
     log.info(f"  Adapters saved at: {cfg['ADAPTER_ROOT'].resolve()}")
 
