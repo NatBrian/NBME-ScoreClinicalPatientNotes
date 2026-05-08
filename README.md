@@ -1,5 +1,7 @@
 # NBME — Score Clinical Patient Notes
 
+![](endtoendarchitecture.png)
+
 ## Competition Overview
 
 [NBME — Score Clinical Patient Notes](https://www.kaggle.com/competitions/nbme-score-clinical-patient-notes) is a Kaggle competition that attracted over 1,400 teams across three months. The task is **clinical span extraction**: given a patient note written by a medical student and a clinical feature from an exam rubric (e.g., "diminished appetite"), find the exact verbatim text span(s) in the note that express that feature (e.g., "eating less", "clothes fit looser").
